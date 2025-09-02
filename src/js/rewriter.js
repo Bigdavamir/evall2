@@ -196,32 +196,20 @@ const rewriter = function(CONFIG) {
 
 	let rotateWarnAt = 8;
 
-	// [VF-PATCH:CoreDecodeEngine] START
 	const CoreDecodeEngine = (() => {
 		const MAX_DEPTH = 10;
 
-		/**
-		 * Main entry point for decoding. Iteratively yields all possible decoded variants.
-		 * @param {*} input The initial data to decode (string, object, array).
-		 * @returns {Generator<[string, string]>} A generator yielding [decodedString, decodeDescription].
-		 */
 		function* deepDecode(input) {
 			const seen = new Set();
-			// The initial input itself isn't a "decoded" variant, so we start with decodeAny
 			yield* decodeAny(input, "initial", seen, 0);
 		}
 
-		/**
-		 * Dispatches to the correct decoder based on input type. Tracks seen values and depth.
-		 */
 		function* decodeAny(input, history, seen, depth) {
 			if (depth > MAX_DEPTH) return;
 
-			// Avoid processing the same primitive value or object reference in the same decoding chain
 			const seenKey = typeof input === 'object' && input !== null ? JSON.stringify(input) : String(input);
 			if (seen.has(seenKey)) return;
 			if (seenKey.length > 0) seen.add(seenKey);
-
 
 			if (typeof input === 'string') {
 				yield* decodeAll(input, history, seen, depth);
@@ -246,22 +234,12 @@ const rewriter = function(CONFIG) {
 			}
 		}
 
-		/**
-		 * Applies all available decoding functions to a string.
-		 */
 		function* decodeAll(str, history, seen, depth) {
 			if (typeof str !== 'string' || str.length === 0) return;
 
 			const decoders = [
-				urlDecode,
-				htmlEntityDecode,
-				jsUnicodeEscapeDecode,
-				base64Decode,
-				hexDecode,
-				charCodeDecode,
-				jsonParse,
-				parseMultipart,
-				octetStreamDecode,
+				urlDecode, htmlEntityDecode, jsUnicodeEscapeDecode, base64Decode,
+				hexDecode, charCodeDecode, jsonParse, parseMultipart, octetStreamDecode
 			];
 
 			for (const decoder of decoders) {
@@ -269,102 +247,70 @@ const rewriter = function(CONFIG) {
 					for (const [decoded, type] of decoder(str)) {
 						if (decoded === str) continue;
 						const newHistory = history === "initial" ? type : `${history}->${type}`;
-
-						// Yield the decoded string variant
 						yield [decoded, newHistory];
-
-						// And recursively decode it
 						yield* decodeAny(decoded, newHistory, seen, depth + 1);
 					}
-				} catch (e) {
-					// Ignore decoding errors and continue with other decoders
-				}
+				} catch (e) {}
 			}
 		}
 
-		// --- Specific Decoding Functions ---
-
 		function* urlDecode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (!str.includes('%')) return;
-			// [VF-PATCH:PreCheck] END
 			let current = str;
-			for (let i = 0; i < 10; i++) { // Limit nesting
+			for (let i = 0; i < 10; i++) {
 				try {
 					const decoded = decodeURIComponent(current);
 					if (decoded !== current) {
 						yield [decoded, `urlDecode(${i+1})`];
 						current = decoded;
-					} else {
-						break;
-					}
-				} catch (e) {
-					break;
-				}
+					} else break;
+				} catch (e) { break; }
 			}
 		}
 
 		function* htmlEntityDecode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (!str.includes('&') || !/&[a-zA-Z0-9#]{1,10};/.test(str)) return;
-			// [VF-PATCH:PreCheck] END
-			// This is a browser-only implementation.
 			if (typeof document === 'undefined') return;
 			try {
 				const textarea = document.createElement('textarea');
 				textarea.innerHTML = str;
 				const decoded = textarea.value;
-				if (decoded !== str) {
-					yield [decoded, 'htmlEntity'];
-				}
+				if (decoded !== str) yield [decoded, 'htmlEntity'];
 			} catch (e) {}
 		}
 
 		function* jsUnicodeEscapeDecode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (!str.includes('\\')) return;
-			// [VF-PATCH:PreCheck] END
-			// decodes \uXXXX and \xXX
 			try {
 				const decoded = str.replace(/\\u([a-fA-F0-9]{4})|\\x([a-fA-F0-9]{2})/g, (_, p1, p2) =>
 					String.fromCharCode(parseInt(p1 || p2, 16))
 				);
-				if (decoded !== str) {
-					yield [decoded, 'jsUnescape'];
-				}
+				if (decoded !== str) yield [decoded, 'jsUnescape'];
 			} catch (e) {}
 		}
 
 		function* base64Decode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (str.length < 4 || str.length % 4 !== 0 || !/^[A-Za-z0-9+/=\s_-]+$/.test(str)) return;
-			// [VF-PATCH:PreCheck] END
 			const standard = str.replace(/[-_]/g, m => m === '-' ? '+' : '/');
 			try {
 				const decoded = atob(standard);
-				if (decoded) {
-					yield [decoded, 'base64'];
-				}
+				if (decoded) yield [decoded, 'base64'];
 			} catch (e) {}
 		}
 
 		function* hexDecode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (str.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(str)) return;
-			// [VF-PATCH:PreCheck] END
 			try {
 				let decoded = '';
 				for (let i = 0; i < str.length; i += 2) {
 					decoded += String.fromCharCode(parseInt(str.substr(i, 2), 16));
 				}
-				 if (decoded) yield [decoded, 'hex'];
+				if (decoded) yield [decoded, 'hex'];
 			} catch (e) {}
 		}
 
 		function* charCodeDecode(str) {
-			// [VF-PATCH:PreCheck] START
 			if (!/^\s*\d+(\s*,\s*\d+)*\s*$/.test(str)) return;
-			// [VF-PATCH:PreCheck] END
 			try {
 				const decoded = String.fromCharCode.apply(null, str.trim().split(',').map(Number));
 				if (decoded) yield [decoded, 'fromCharCode'];
@@ -372,24 +318,17 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* jsonParse(str) {
-			// [VF-PATCH:PreCheck] START
 			const trimmed = str.trim();
-			if ((!trimmed.startsWith('{') || !trimmed.endsWith('}')) && (!trimmed.startsWith('[') || !trimmed.endsWith(']'))) {
-				return;
-			}
-			// [VF-PATCH:PreCheck] END
+			if ((!trimmed.startsWith('{') || !trimmed.endsWith('}')) && (!trimmed.startsWith('[') || !trimmed.endsWith(']'))) return;
 			try {
 				const parsed = JSON.parse(trimmed);
-				// We don't yield the object itself, but rather kick off a new decoding from that point
-				const newSeen = new Set(); // Use a fresh 'seen' set for the sub-document
+				const newSeen = new Set();
 				yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
 			} catch (e) {}
 		}
 
 		function* parseMultipart(str) {
-			// [VF-PATCH:PreCheck] START
 			if (!str.includes('Content-Disposition')) return;
-			// [VF-PATCH:PreCheck] END
 			const boundaryMatch = str.match(/^--([^\r\n]+)/);
 			if (!boundaryMatch) return;
 			const boundary = boundaryMatch[1];
@@ -397,10 +336,8 @@ const rewriter = function(CONFIG) {
 			for (const part of parts) {
 				const trimmedPart = part.trim();
 				if (trimmedPart === '') continue;
-
 				const headerMatch = trimmedPart.match(/Content-Disposition:[^\r\n]*; name="([^"]+)"/);
 				if (!headerMatch) continue;
-
 				const name = headerMatch[1];
 				const contentSplit = trimmedPart.split('\r\n\r\n');
 				if (contentSplit.length > 1) {
@@ -411,149 +348,34 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* octetStreamDecode(str) {
-			// This is a heuristic. Real octet-stream is binary, but here we handle string representations.
-			// Attempt to decode as if it's a UTF-8 byte stream that has been URI-encoded.
-			try {
-				// A common pattern for binary data in strings is percent-encoding bytes.
-				if (str.includes('%')) {
-					 const decoded = decodeURIComponent(str);
-					 if (decoded !== str) yield [decoded, 'octetStream(utf8)'];
-				}
-			} catch (e) {
-				// A different heuristic: if it contains non-printable ASCII, treat as binary string.
-				if (/[^\x20-\x7E\t\r\n]/.test(str)) {
-					yield [str, 'octetStream(binary)'];
-				}
+			if (str.includes('%')) {
+				try {
+					const decoded = decodeURIComponent(str);
+					if (decoded !== str) yield [decoded, 'octetStream(utf8)'];
+				} catch (e) {}
+			}
+			if (/[^\x20-\x7E\t\r\n]/.test(str)) {
+				yield [str, 'octetStream(binary)'];
 			}
 		}
 
 		return { deepDecode };
 	})();
 
-	/*
-	[VF-PATCH:CoreDecodeEngine-Tests]
-	This is a small test suite to verify the functionality of the CoreDecodeEngine.
-	To run, you would execute this in a browser console on a page where the rewriter is active,
-	then call `runCoreDecodeTests()`.
-
-	function runCoreDecodeTests() {
-		const CDE = CoreDecodeEngine;
-		console.log("--- Running CoreDecodeEngine Tests ---");
-
-		const tests = [
-			{
-				name: "Nested URL Encoding",
-				input: "https%253A%252F%252Fexample.com%253Fq%253Dtest",
-				expected: ["https://example.com/?q=test"]
-			},
-			{
-				name: "HTML Entity Encoding",
-				input: "&lt;div&gt;Hello&lt;/div&gt;",
-				expected: ["<div>Hello</div>"]
-			},
-			{
-				name: "Base64 HTML Payload",
-				input: "PGRpdiBvbmNsaWNrPSJhbGVydCgnSGVsbG8nKSI+Q2xpY2sgbWUhPC9kaXY+",
-				expected: [`<div onclick="alert('Hello')">Click me!</div>`]
-			},
-			{
-				name: "Multipart Form Data",
-				input: `--boundary\r\nContent-Disposition: form-data; name="text"\r\n\r\nHello World\r\n--boundary\r\nContent-Disposition: form-data; name="json"\r\n\r\n{"a": "b"}\r\n--boundary--`,
-				expected: ["Hello World", '{"a": "b"}', "b"]
-			},
-			{
-				name: "Octet-stream (URL-encoded UTF8)",
-				input: "S%C3%A9bastien",
-				expected: ["Sébastien"],
-			},
-			{
-				name: "Nested JSON with encoded fields",
-				input: `{"user":{"name":"Sm9obiBEb2U=","profile":"%3Cscript%3Ealert(1)%3C%2Fscript%3E"}}`,
-				expected: ["John Doe", "<script>alert(1)</script>"]
-			},
-			{
-				name: "JS Unicode/Hex Escapes",
-				input: "\\u0048\\u0065\\u006c\\u006c\\u006f\\x20\\u0057\\u006f\\u0072\\u006c\\u0064",
-				expected: ["Hello World"]
-			},
-			{
-				name: "CharCode Array",
-				input: "72,101,108,108,111",
-				expected: ["Hello"]
-			},
-			{
-				name: "Complex Nested Case (b64->url->json)",
-				input: "JTVCJTIySGVsbG8lMjUyMFdvcmxkJTIyJTVE", // base64: '["Hello%20World"]'
-				expected: ["[\"Hello World\"]", "Hello World"]
-			}
-		];
-
-		let passed = 0, failed = 0;
-
-		tests.forEach(test => {
-			console.group(`Test: ${test.name}`);
-			const results = new Set();
-			try {
-				for (const [decoded, _] of CDE.deepDecode(test.input)) {
-					results.add(decoded);
-				}
-
-				let testPassed = true;
-				for (const exp of test.expected) {
-					if (!results.has(exp)) {
-						console.error(`FAIL: Expected to find "${exp}" but it was not decoded.`);
-						testPassed = false;
-					} else {
-						console.log(`PASS: Found expected value "${exp}"`);
-					}
-				}
-				if (testPassed) passed++; else failed++;
-			} catch (e) {
-				console.error(`FAIL: Test threw an error: ${e.message}`);
-				failed++;
-			}
-			console.groupEnd();
-		});
-
-		console.log(`--- Test Summary ---`);
-		console.log(`Passed: ${passed}, Failed: ${failed}`);
-		if (failed > 0) {
-			console.error("Some tests failed!");
-		} else {
-			console.log("%cAll tests passed!", "color: green; font-weight: bold;");
-		}
-		return failed === 0;
-	}
-	*/
-	// [VF-PATCH:CoreDecodeEngine] END
-
 	const MAX_INPUT_SIZE = 10000;
 
-	// set of strings to search for
-	function addToFifo(sObj, fifoName) { // TODO: add blacklist arg
-		// [VF-PATCH:SizeLimit] START
-		let inputSize = 0;
-		if (typeof sObj.search === 'string') {
-			inputSize = sObj.search.length;
-		} else if (typeof sObj.search === 'object' && sObj.search !== null) {
-			try {
-				inputSize = JSON.stringify(sObj.search).length;
-			} catch (e) {
-				return; // Cannot serialize, so skip
-			}
+	function addToFifo(sObj, fifoName) {
+		if (typeof sObj.search === 'string' && sObj.search.length > MAX_INPUT_SIZE) {
+			return;
 		}
-		if (inputSize > MAX_INPUT_SIZE) {
-			return; // Skip oversized input
-		}
-		// [VF-PATCH:SizeLimit] END
 
 		const fifo = ALLSOURCES[fifoName];
 		if (!fifo) {
 			throw `No ${fifoName}`;
 		}
-		// Yield the original value first
+
 		if (!BLACKLIST.matchAny(sObj.search) && !fifo.has(sObj.search)) {
-			fifo.nq({...sObj, search: sObj.search, decode: "initial"});
+			fifo.nq({...sObj, decode: "initial"});
 		}
 
 		for (const [search, decode] of CoreDecodeEngine.deepDecode(sObj.search)) {
@@ -1004,10 +826,10 @@ const rewriter = function(CONFIG) {
 		// Load persisted user sources
 		if (putInUse("userSource")) {
 			try {
-				const sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
-				sources.forEach(sObj => {
-					// Ensure the source is not already in the fifo from other sources
-					if (!ALLSOURCES.userSource.has(sObj.search)) {
+				const savedSearches = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
+				savedSearches.forEach(searchString => {
+					if (!ALLSOURCES.userSource.has(searchString)) {
+						const sObj = { search: searchString, display: 'localStorage' };
 						addToFifo(sObj, "userSource");
 					}
 				});
@@ -1152,31 +974,23 @@ const rewriter = function(CONFIG) {
 	function saveUserSource(sObj) {
 		try {
 			let sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
+			if (sources.includes(sObj.search)) return;
 
-			// Remove any previous entry from the same element to avoid storing intermediate values
-			const filteredSources = sources.filter(s => s.display !== sObj.display);
+			sources.unshift(sObj.search);
 
-			// Add the new source to the beginning
-			filteredSources.unshift(sObj);
-
-			// Enforce the quota
-			if (filteredSources.length > MAX_USER_SOURCES) {
-				filteredSources.length = MAX_USER_SOURCES;
+			if (sources.length > MAX_USER_SOURCES) {
+				sources.length = MAX_USER_SOURCES;
 			}
-
-			real.localStorage.setItem(USER_SOURCE_KEY, JSON.stringify(filteredSources));
+			real.localStorage.setItem(USER_SOURCE_KEY, JSON.stringify(sources));
 		} catch (e) {
 			real.warn('[EV] Failed to save user source to localStorage.', e);
 		}
 	}
 
-	// [VF-PATCH:PassiveInputListener] START
 	function setupPassiveInputListener() {
 		const startListener = () => {
 			const targetNode = document.body;
-			if (!targetNode) {
-				return;
-			}
+			if (!targetNode) return;
 
 			const observerConfig = { childList: true, subtree: true };
 			const SELECTORS = 'input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], textarea, [contenteditable="true"]';
@@ -1236,11 +1050,6 @@ const rewriter = function(CONFIG) {
 				}
 				lastValueMap.set(element, value);
 
-				const MAX_PASSIVE_INPUT_SIZE = 10000;
-				if (value.length > MAX_PASSIVE_INPUT_SIZE) {
-					return;
-				}
-
 				const sObj = {
 					search: value,
 					timestamp: new Date().toISOString(),
@@ -1260,5 +1069,4 @@ const rewriter = function(CONFIG) {
 		}
 	}
 	setupPassiveInputListener();
-	// [VF-PATCH:PassiveInputListener] END
 }
