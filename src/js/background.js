@@ -113,6 +113,18 @@ const defaultConfig = {
 			"name" : "decodeURIComponent",
 			"enabled" : false,
 			"pattern" : "decodeURIComponent"
+		}, {
+			"name": "Node.insertBefore",
+			"enabled": true,
+			"pattern": "value(Node.insertBefore)"
+		}, {
+			"name": "Node.appendChild",
+			"enabled": true,
+			"pattern": "value(Node.appendChild)"
+		}, {
+			"name": "Node.replaceChild",
+			"enabled": true,
+			"pattern": "value(Node.replaceChild)"
 		}
 	],
 	"blacklist" : [
