@@ -684,19 +684,16 @@ const rewriter = function(CONFIG) {
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
 		// If there's no original function, we can't proceed with hooking.
-		// Log the call attempt and return from the hook.
 		if (typeof originalFunc !== 'function') {
 			real.warn("[EV] No original function found for sink:", name);
 			const argObj = getArgs(args);
 			if (argObj.args.length > 0) {
 				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
 			}
-			// We cannot proceed, so we let the original call happen via the proxy.
-			// This might fail if originalFunc is not a function, which is expected.
 			return Reflect.apply(originalFunc, thisArg, args);
 		}
 
-		// Prepare arguments for logging. We do this early to capture the original state.
+		// Prepare arguments for logging.
 		const logCandidate = {
 			intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args)
 		};
@@ -717,19 +714,22 @@ const rewriter = function(CONFIG) {
 				case 'setTimeout':
 				case 'setInterval':
 					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
-						// Append the marker as a harmless string literal.
-						modifiedArgs[0] = originalArgs[0] + '; ' + JSON.stringify(markerId);
+						// Use template literal for consistent and safe marker injection.
+						modifiedArgs[0] = `${originalArgs[0]}; ${JSON.stringify(markerId)}`;
 						const result = originalFunc.apply(thisArg, modifiedArgs);
 						queueMicrotask(taskToLog);
 						return result;
 					}
-					// If not a string, fall through to default behavior.
-					break;
+					break; // Fall through to default if not a string
 
 				// HTML Sinks: innerHTML, outerHTML
 				case 'set(Element.innerHTML)':
 				case 'set(Element.outerHTML)':
-					const result = originalFunc.apply(thisArg, originalArgs);
+					if (typeof originalArgs[0] === 'string') {
+						// Inject an HTML comment marker for probe detection.
+						modifiedArgs[0] = `${originalArgs[0]}<!--${markerId}-->`;
+					}
+					const result = originalFunc.apply(thisArg, modifiedArgs);
 					queueMicrotask(taskToLog);
 					return result;
 
@@ -753,23 +753,20 @@ const rewriter = function(CONFIG) {
 					} else {
 						// "Ephemeral Injection": Briefly add a marker to the value.
 						if (typeof originalArgs[1] === 'string') {
-							modifiedArgs[1] = originalArgs[1] + markerId;
+							modifiedArgs[1] = `${originalArgs[1]}${markerId}`;
 							originalFunc.apply(thisArg, modifiedArgs); // Apply modified value.
 							const attrResult = originalFunc.apply(thisArg, originalArgs); // Immediately restore.
 							queueMicrotask(taskToLog);
 							return attrResult;
 						}
-						// If value is not a string, fall through to default.
 					}
-					break;
+					break; // Fall through to default if not a string
 			}
 		} catch (e) {
 			real.warn(`[EV] Error during sink handling for '${name}':`, e);
-			// Fall through to default behavior even if our logic fails.
 		}
 
 		// --- Default Behavior for all other sinks ---
-		// Call the original function and return its result, logging afterward.
 		const result = originalFunc.apply(thisArg, originalArgs);
 		queueMicrotask(taskToLog);
 		return result;
