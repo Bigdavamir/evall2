@@ -364,40 +364,31 @@ const rewriter = function(CONFIG) {
 		let id = '';
 		const param = sObj.param;
 
-		// The encoder functions no longer take a 'marker' argument.
-		// They read it from the global scope to ensure it's available.
-		const getGlobalMarker = () => {
-			const marker = window.EV_ACTIVE_MARKER;
-			if (!marker) {
-				real.warn("[EV] Probe encoder called but no active marker was found on window.EV_ACTIVE_MARKER.");
-			}
-			return marker;
-		};
+		const getGlobalMarker = () => window.EV_ACTIVE_MARKER;
 
 		switch (fifoName) {
 			case 'localStorage':
 				if (!param) break;
 				id = `ls:${param}`;
 				priority = 1;
-				encoder = () => { const marker = getGlobalMarker(); if (marker) localStorage.setItem(param, marker); };
+				encoder = (marker = getGlobalMarker()) => { if (marker) localStorage.setItem(param, marker); };
 				break;
 			case 'cookie':
 				if (!param) break;
 				id = `cookie:${param}`;
 				priority = 1;
-				encoder = () => { const marker = getGlobalMarker(); if (marker) document.cookie = `${param}=${marker}`; };
+				encoder = (marker = getGlobalMarker()) => { if (marker) document.cookie = `${param}=${marker}`; };
 				break;
 			case 'winname':
 				id = 'winname';
 				priority = 1;
-				encoder = () => { const marker = getGlobalMarker(); if (marker) window.name = marker; };
+				encoder = (marker = getGlobalMarker()) => { if (marker) window.name = marker; };
 				break;
 			case 'query':
 				if (!param) break;
 				id = `query:${param}`;
 				priority = 3;
-				encoder = () => {
-					const marker = getGlobalMarker();
+				encoder = (marker = getGlobalMarker()) => {
 					if (!marker) return;
 					const url = new URL(window.location.href);
 					url.searchParams.set(param, marker);
@@ -407,7 +398,7 @@ const rewriter = function(CONFIG) {
 			case 'fragment':
 				id = 'fragment';
 				priority = 3;
-				encoder = () => { const marker = getGlobalMarker(); if (marker) window.location.hash = marker; };
+				encoder = (marker = getGlobalMarker()) => { if (marker) window.location.hash = marker; };
 				break;
 			case 'path':
 				// Path manipulation is complex and risky, skipping for probe for now.

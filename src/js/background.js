@@ -517,13 +517,13 @@ function handleMessage(request, _sender, _sendResponse) {
 	} else if (request === "getScriptInfo") {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
+		// Generate the marker in the background script to ensure it's defined.
+		const marker = `EV_SAFE_PROBE_${Date.now()}_${Math.random().toString(36).substr(2,9)}`;
+
 		const probeCode = `
-			(function runOptimizedProbe() {
-				// Ensure a global marker exists, even if no sink has been triggered yet.
-				if (!window.EV_ACTIVE_MARKER) {
-					window.EV_ACTIVE_MARKER = \`EV_SAFE_PROBE_${Date.now()}_${Math.random().toString(36).substr(2,9)}\`;
-				}
-				const marker = window.EV_ACTIVE_MARKER;
+			(function runOptimizedProbe(marker) {
+				// Set the global marker for any new-style encoders that rely on it.
+				window.EV_ACTIVE_MARKER = marker;
 
 				const BATCH_SIZE = 15;
 				const BATCH_DELAY = 50;
@@ -561,10 +561,9 @@ function handleMessage(request, _sender, _sendResponse) {
 					for (const src of batch) {
 						try {
 							if (typeof src.encoder === 'function') {
-								// Check arity to support old encoders that expect a marker argument.
-								src.encoder.length > 0
-									? src.encoder(marker)
-									: src.encoder();
+								// Call encoder with the marker. The encoder's default parameter
+								// will handle cases where it's not passed.
+								src.encoder(marker);
 							}
 						} catch (e) {
 							console.warn("Probe encode failed for source:", src, e);
@@ -577,7 +576,7 @@ function handleMessage(request, _sender, _sendResponse) {
 
 				schedule(processNextBatch);
 
-			})();
+			})(${JSON.stringify(marker)});
 		`;
 
 		browser.tabs.executeScript({
