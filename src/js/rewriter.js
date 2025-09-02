@@ -722,6 +722,24 @@ const rewriter = function(CONFIG) {
 		}
 	}
 
+	/**
+	 * Safely search for a property descriptor up the prototype chain.
+	 * @param {object} obj The object to search on.
+	 * @param {string} propName The name of the property.
+	 * @returns {object|null} The property descriptor or null if not found.
+	 */
+	function findDescriptor(obj, propName) {
+		let current = obj;
+		while (current) {
+			const descriptor = Object.getOwnPropertyDescriptor(current, propName);
+			if (descriptor) {
+				return descriptor;
+			}
+			current = Object.getPrototypeOf(current);
+		}
+		return null;
+	}
+
 	/*
 	 * NOTICE:
 	 * updates here should maybe be reflected in input validation
@@ -733,34 +751,66 @@ const rewriter = function(CONFIG) {
 	 * @param {string} evname	Name of sink to hook.
 	 **/
 	function applyEvalVillain(evname) {
-		function getFunc(n) {
-			const ret = {}
-			ret.where = window;
-			const groups = n.split(".");
-			let i = 0; // outside for loop for a reason
-			for (i=0; i<groups.length-1; i++) {
-				ret.where = ret.where[groups[i]];
+		try {
+			function getFunc(n) {
+				const ret = {};
+				ret.where = window;
+				const groups = n.split(".");
+				let i = 0;
+				for (i = 0; i < groups.length - 1; i++) {
+					if (!ret.where) {
+						return null;
+					}
+					ret.where = ret.where[groups[i]];
+				}
+				ret.leaf = groups[i];
 				if (!ret.where) {
 					return null;
 				}
+				return ret;
 			}
-			ret.leaf = groups[i];
-			return ret ? ret : null;
-		}
 
-		const ownprop = /^(set|value)\(([a-zA-Z.]+)\)\s*$/.exec(evname);
-		const ep = new evProxy(INTRBUNDLE);
-		ep.evname = evname;
-		if (ownprop) {
-			const prop = ownprop[1];
-			const f = getFunc(ownprop[2]);
-			const orig = Object.getOwnPropertyDescriptor(f.where.prototype, f.leaf)[prop];
-			Object.defineProperty(f.where.prototype, f.leaf, {[prop] : new Proxy(orig, ep)});
-		} else if (!/^[a-zA-Z.]+$/.test(evname)) {
-			real.log("[EV] name: %s invalid, not hooking", evname);
-		} else {
-			const f = getFunc(evname);
-			f.where[f.leaf] = new Proxy(f.where[f.leaf], ep);
+			const ownprop = /^(set|value)\(([a-zA-Z_$.]+)\)\s*$/.exec(evname);
+			const ep = new evProxy(INTRBUNDLE);
+			ep.evname = evname;
+
+			if (ownprop) {
+				const prop = ownprop[1]; // 'set' or 'value'
+				const f = getFunc(ownprop[2]);
+
+				if (!f) {
+					real.warn(`[EV] Could not find object for sink: ${evname}`);
+					return;
+				}
+
+				const descriptor = findDescriptor(f.where.prototype, f.leaf);
+
+				if (!descriptor) {
+					real.warn(`[EV] Could not find property descriptor for sink: ${evname}`);
+					return;
+				}
+
+				const orig = descriptor[prop];
+				if (typeof orig !== 'function') {
+					real.warn(`[EV] Original property '${prop}' is not a function for sink: ${evname}`);
+					return;
+				}
+
+				Object.defineProperty(f.where.prototype, f.leaf, { [prop]: new Proxy(orig, ep) });
+
+			} else if (!/^[a-zA-Z_$.]+$/.test(evname)) {
+				real.warn("[EV] Sink name: %s invalid, not hooking", evname);
+
+			} else {
+				const f = getFunc(evname);
+				if (!f || typeof f.where[f.leaf] !== 'function') {
+					real.warn(`[EV] Could not find function for sink: ${evname}`);
+					return;
+				}
+				f.where[f.leaf] = new Proxy(f.where[f.leaf], ep);
+			}
+		} catch (e) {
+			real.warn(`[EV] Failed to hook sink: ${evname}`, e);
 		}
 	}
 
@@ -928,7 +978,11 @@ const rewriter = function(CONFIG) {
 	buildSearches();
 
 	for (const nm of CONFIG["functions"]) {
-		applyEvalVillain(nm);
+		try {
+			applyEvalVillain(nm);
+		} catch (e) {
+			real.warn(`[EV] Uncaught error while hooking sink: ${nm}`, e);
+		}
 	}
 
 	// turns console.log into console.info
