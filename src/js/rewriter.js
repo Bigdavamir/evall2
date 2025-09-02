@@ -360,9 +360,10 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* jsonParse(str) {
-			if ((str.startsWith('{') && str.endsWith('}')) || (str.startsWith('[') && str.endsWith(']'))) {
+        const trimmed = str.trim();
+        if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
 				try {
-					const parsed = JSON.parse(str);
+                const parsed = JSON.parse(trimmed);
 					// We don't yield the object itself, but rather kick off a new decoding from that point
 					const newSeen = new Set(); // Use a fresh 'seen' set for the sub-document
 					yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
