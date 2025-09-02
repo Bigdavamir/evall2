@@ -682,8 +682,17 @@ const rewriter = function(CONFIG) {
 		real.logGroupEnd(titleGrp);
 	}
 
+	/**
+	 * Injects a marker into a JavaScript string in a way that is syntactically safe.
+	 * @param {string} str - The original JavaScript code string.
+	 * @param {string} markerId - The marker to inject.
+	 * @returns {string} The modified string with the marker injected.
+	 */
+	function injectMarkerToJsString(str, markerId) {
+		return `${str}; ${JSON.stringify(markerId)}`;
+	}
+
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
-		// If there's no original function, we can't proceed with hooking.
 		if (typeof originalFunc !== 'function') {
 			real.warn("[EV] No original function found for sink:", name);
 			const argObj = getArgs(args);
@@ -693,53 +702,51 @@ const rewriter = function(CONFIG) {
 			return Reflect.apply(originalFunc, thisArg, args);
 		}
 
-		// Prepare arguments for logging.
 		const logCandidate = {
 			intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args)
 		};
-
-		// This function will be queued to run after the current macrotask.
 		const taskToLog = () => finalizeLog(logCandidate);
-
-		// Generate a unique marker for injection.
 		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 9)}__`;
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
 		try {
 			switch (name) {
-				// Execution Sinks: eval, Function, setTimeout, setInterval
+				// Execution Sinks
 				case 'eval':
 				case 'Function':
 				case 'setTimeout':
 				case 'setInterval':
 					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
-						// Use template literal for consistent and safe marker injection.
-						modifiedArgs[0] = `${originalArgs[0]}; ${JSON.stringify(markerId)}`;
+						modifiedArgs[0] = injectMarkerToJsString(originalArgs[0], markerId);
 						const result = originalFunc.apply(thisArg, modifiedArgs);
 						queueMicrotask(taskToLog);
 						return result;
 					}
-					break; // Fall through to default if not a string
+					break;
 
-				// HTML Sinks: innerHTML, outerHTML
+				// HTML / DOM Sinks
+				case 'document.write':
+				case 'document.writeln':
 				case 'set(Element.innerHTML)':
 				case 'set(Element.outerHTML)':
 					if (typeof originalArgs[0] === 'string') {
-						// Inject an HTML comment marker for probe detection.
+						// Ephemeral Injection for HTML sinks
 						modifiedArgs[0] = `${originalArgs[0]}<!--${markerId}-->`;
+						originalFunc.apply(thisArg, modifiedArgs);
+						const result = originalFunc.apply(thisArg, originalArgs); // Restore
+						queueMicrotask(taskToLog);
+						return result;
 					}
-					const result = originalFunc.apply(thisArg, modifiedArgs);
-					queueMicrotask(taskToLog);
-					return result;
+					break;
 
-				// Attribute Sink: setAttribute
+				// Attribute Sink
 				case 'value(Element.setAttribute)':
 					const attrName = originalArgs[0]?.toLowerCase();
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
-						// "Safe Injection": Use a temporary side-attribute.
+						// Safe Injection for sensitive attributes
 						const markerAttrName = `data-ev-marker-${attrName}`;
 						originalFunc.apply(thisArg, [markerAttrName, markerId]);
 						const attrResult = originalFunc.apply(thisArg, originalArgs);
@@ -751,22 +758,22 @@ const rewriter = function(CONFIG) {
 						});
 						return attrResult;
 					} else {
-						// "Ephemeral Injection": Briefly add a marker to the value.
+						// Ephemeral Injection for non-sensitive attributes
 						if (typeof originalArgs[1] === 'string') {
 							modifiedArgs[1] = `${originalArgs[1]}${markerId}`;
-							originalFunc.apply(thisArg, modifiedArgs); // Apply modified value.
-							const attrResult = originalFunc.apply(thisArg, originalArgs); // Immediately restore.
+							originalFunc.apply(thisArg, modifiedArgs);
+							const attrResult = originalFunc.apply(thisArg, originalArgs); // Restore
 							queueMicrotask(taskToLog);
 							return attrResult;
 						}
 					}
-					break; // Fall through to default if not a string
+					break;
 			}
 		} catch (e) {
 			real.warn(`[EV] Error during sink handling for '${name}':`, e);
 		}
 
-		// --- Default Behavior for all other sinks ---
+		// Default Behavior for all other sinks
 		const result = originalFunc.apply(thisArg, originalArgs);
 		queueMicrotask(taskToLog);
 		return result;
