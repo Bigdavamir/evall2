@@ -555,7 +555,10 @@ function handleMessage(request, _sender, _sendResponse) {
 					for (const src of batch) {
 						try {
 							if (typeof src.encoder === 'function') {
-								src.encoder(marker);
+								// Backward-compatible check for encoder arity
+								src.encoder.length > 0
+									? src.encoder(window.EV_ACTIVE_MARKER || marker) // Pass global marker if available
+									: src.encoder(); // Call new-style encoder
 							}
 						} catch (e) {
 							console.warn("Probe encode failed for source:", src, e);
