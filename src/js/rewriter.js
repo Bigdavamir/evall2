@@ -1179,7 +1179,7 @@ const rewriter = function(CONFIG) {
 
 		function attachListeners(element) {
 			if (element.dataset.evListenersAttached) return;
-
+			real.log(`[EV-DEBUG] Attaching listeners to:`, element);
 			element.addEventListener('input', eventHandler);
 			element.addEventListener('change', eventHandler);
 			element.addEventListener('keyup', eventHandler);
@@ -1187,11 +1187,13 @@ const rewriter = function(CONFIG) {
 		}
 
 		function eventHandler(event) {
+			real.log(`[EV-DEBUG] Event triggered: ${event.type}`, event.target);
 			const element = event.target;
 			const value = element.isContentEditable ? element.textContent : element.value;
 
 			// Duplicate prevention
 			if (lastValueMap.get(element) === value) {
+				real.log(`[EV-DEBUG] Duplicate value skipped: "${value}"`);
 				return;
 			}
 			lastValueMap.set(element, value);
@@ -1200,6 +1202,7 @@ const rewriter = function(CONFIG) {
 			if (debounceMap.has(element)) {
 				clearTimeout(debounceMap.get(element));
 			}
+			real.log(`[EV-DEBUG] Setting debounce timer for value: "${value}"`);
 			const timeoutId = setTimeout(() => {
 				processValue(element, value);
 			}, 250);
@@ -1208,9 +1211,11 @@ const rewriter = function(CONFIG) {
 		}
 
 		function processValue(element, value) {
+			real.log(`[EV-DEBUG] Processing value: "${value}"`, element);
 			// [VF-PATCH:PassiveInputSizeLimit] START
 			const MAX_PASSIVE_INPUT_SIZE = 10000;
 			if (value.length > MAX_PASSIVE_INPUT_SIZE) {
+				real.log(`[EV-DEBUG] Value skipped due to size limit.`);
 				return; // Skip oversized input
 			}
 			// [VF-PATCH:PassiveInputSizeLimit] END
@@ -1222,6 +1227,7 @@ const rewriter = function(CONFIG) {
 				display: element.tagName.toLowerCase() + (element.id ? `#${element.id}` : '')
 			};
 
+			real.log(`[EV-DEBUG] Calling addToFifo with:`, sObj);
 			addToFifo(sObj, 'userSource');
 		}
 	}
