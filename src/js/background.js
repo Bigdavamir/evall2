@@ -460,14 +460,11 @@ async function register() {
 		return;
 	}
 
-	const code = `config = ${JSON.stringify(config)};`;
-
-
 	// firefox >=59, not supported in chrome...
 	this.unreg = await browser.contentScripts.register({
 		matches: match,
 		js: [
-			{code: code}, 					// contains configuration for rewriter
+			{file: "/js/config.js"},
 			{file: "/js/rewriter.js"},		// Has actual code that gets injected into the page
 			{file: "/js/switcheroo.js"}		// cause the injection
 		],

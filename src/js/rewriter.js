@@ -4,6 +4,50 @@
  * want. Such as into a proxie'd response or electron instramentation.
  */
 const rewriter = function(CONFIG) {
+  console.groupCollapsed('[EV DEBUG] rewriter() entered in frame');
+  console.log('   location.href    =', window.location.href);
+  console.log('   CONFIG.functions =', CONFIG.functions);
+  console.groupEnd();
+
+  (function forceHookInnerOuterHTML() {
+    for (const prop of ['innerHTML','outerHTML']) {
+      // Step 1: Get the descriptor
+      const desc = Object.getOwnPropertyDescriptor(Element.prototype, prop);
+      if (!desc) {
+        console.warn(`[EV DEBUG] no descriptor for Element.prototype.${prop}`);
+        continue;
+      }
+      // Step 2: Check for a setter
+      const originalSet = desc.set;
+      if (typeof originalSet !== 'function') {
+        console.warn(`[EV DEBUG] Element.prototype.${prop} has no setter`);
+        continue;
+      }
+      // Step 3: Redefine the property with logging
+      Object.defineProperty(Element.prototype, prop, {
+        configurable: desc.configurable,
+        enumerable:   desc.enumerable,
+        get:          desc.get,
+        set(value) {
+          console.groupCollapsed(`[EV DEBUG] set(Element.${prop}):`, value);
+          console.trace();
+          console.groupEnd();
+          return originalSet.call(this, value);
+        }
+      });
+    }
+  })();
+
+  ['appendChild','replaceChild'].forEach(name => {
+    const orig = Node.prototype[name];
+    Node.prototype[name] = function(...args) {
+      console.groupCollapsed(`[EV DEBUG] Node.${name}`, args[0]);
+      console.trace();
+      console.groupEnd();
+      return orig.apply(this, args);
+    };
+  });
+
 	// Filter out known unsupported navigation sinks to avoid warnings.
 	// This is a secondary check; the primary filter is in background.js.
 	CONFIG.functions = CONFIG.functions.filter(evname => {
