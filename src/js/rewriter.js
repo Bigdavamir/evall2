@@ -357,36 +357,53 @@ const rewriter = function(CONFIG) {
 
 	function storeSourceForProbe(sObj, fifoName) {
 		let encoder = null;
+		let priority = 1;
+		let id = '';
 		const param = sObj.param;
 
 		switch (fifoName) {
 			case 'localStorage':
 				if (!param) break;
+				id = `ls:${param}`;
+				priority = 1;
 				encoder = (marker) => { localStorage.setItem(param, marker); };
 				break;
 			case 'cookie':
 				if (!param) break;
+				id = `cookie:${param}`;
+				priority = 1;
 				encoder = (marker) => { document.cookie = `${param}=${marker}`; };
 				break;
 			case 'winname':
+				id = 'winname';
+				priority = 1;
 				encoder = (marker) => { window.name = marker; };
 				break;
 			case 'query':
 				if (!param) break;
+				id = `query:${param}`;
+				priority = 3;
 				encoder = (marker) => {
 					const url = new URL(window.location.href);
 					url.searchParams.set(param, marker);
-					window.location = url.href;
+					window.location.href = url.href;
 				};
 				break;
 			case 'fragment':
+				id = 'fragment';
+				priority = 3;
 				encoder = (marker) => { window.location.hash = marker; };
+				break;
+			case 'path':
+				// Path manipulation is complex and risky, skipping for probe for now.
 				break;
 		}
 
 		if (encoder) {
 			window.EV_FOUND_SOURCES.push({
-				encoder: encoder,
+				id,
+				priority,
+				encoder,
 				value: sObj.search,
 				meta: { type: fifoName, param: param, location: location.href }
 			});
@@ -672,21 +689,26 @@ const rewriter = function(CONFIG) {
 	* @returns {boolean} Always returns `false`
 	**/
 	function storeSinkForProbe(name, args, element) {
-		if (!element) return; // Can't create a sink encoder without an element to act on.
+		if (!element || !element.tagName) return; // Can't create a sink encoder without an element to act on.
 
 		let encoder = null;
-		const value = args[0]; // The tainted value we are interested in.
+		const value = args[0];
+		const priority = 2; // DOM modifications are medium priority.
+		let id = '';
 
 		switch (name) {
 			case 'set(Element.innerHTML)':
+				id = `sink:innerHTML:${element.tagName}`;
 				encoder = (marker) => { element.innerHTML = marker; };
 				break;
 			case 'set(Element.outerHTML)':
+				id = `sink:outerHTML:${element.tagName}`;
 				encoder = (marker) => { element.outerHTML = marker; };
 				break;
 			case 'value(Element.setAttribute)':
 			case 'value(Element.setAttributeNS)':
 				const attributeName = args[0];
+				id = `sink:setAttribute:${element.tagName}:${attributeName}`;
 				// We only care about the value being tainted, not the attribute name.
 				encoder = (marker) => { element.setAttribute(attributeName, marker); };
 				break;
@@ -694,6 +716,8 @@ const rewriter = function(CONFIG) {
 
 		if (encoder) {
 			window.EV_FOUND_SOURCES.push({
+				id,
+				priority,
 				encoder,
 				value: String(value), // Ensure value is a string for metadata
 				meta: { type: 'sink', param: name, location: location.href }

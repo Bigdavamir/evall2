@@ -518,22 +518,57 @@ function handleMessage(request, _sender, _sendResponse) {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
 		const probeCode = `
-			(function runStressProbe(marker) {
-				if (!window.EV_FOUND_SOURCES || window.EV_FOUND_SOURCES.length === 0) {
+			(async function runOptimizedProbe(marker) {
+				const BATCH_SIZE = 15;
+				const BATCH_DELAY = 50; // ms, fallback for setTimeout
+
+				function schedule(callback) {
+					if (window.requestIdleCallback) {
+						requestIdleCallback(callback);
+					} else {
+						setTimeout(callback, BATCH_DELAY);
+					}
+				}
+
+				const sources = window.EV_FOUND_SOURCES || [];
+				if (sources.length === 0) {
 					console.log("[EV] No sources found to probe.");
 					return;
 				}
-				console.log(\`[EV] Running probe with marker: \${marker}\`);
-				for (const src of window.EV_FOUND_SOURCES) {
-					try {
-						if (typeof src.encoder === 'function') {
-							src.encoder(marker);
-						}
-					} catch (e) {
-						console.warn("Probe encode failed for source:", src, e);
+
+				// 1. De-duplicate sources based on the unique ID
+				const uniqueSources = Array.from(new Map(sources.map(s => [s.id, s])).values());
+
+				// 2. Sort by priority (lower number = higher priority)
+				uniqueSources.sort((a, b) => a.priority - b.priority);
+
+				console.log(\`[EV] Running probe with marker: \${marker} on \${uniqueSources.length} unique sources (out of \${sources.length} total).\`);
+
+				let i = 0;
+				function processNextBatch() {
+					const batch = uniqueSources.slice(i, i + BATCH_SIZE);
+					if (batch.length === 0) {
+						console.log("[EV] Probe batches complete. Reloading page...");
+						setTimeout(() => location.reload(), 100);
+						return;
 					}
+
+					for (const src of batch) {
+						try {
+							if (typeof src.encoder === 'function') {
+								src.encoder(marker);
+							}
+						} catch (e) {
+							console.warn("Probe encode failed for source:", src, e);
+						}
+					}
+
+					i += BATCH_SIZE;
+					schedule(processNextBatch);
 				}
-				location.reload();
+
+				schedule(processNextBatch);
+
 			})("AMIR");
 		`;
 
