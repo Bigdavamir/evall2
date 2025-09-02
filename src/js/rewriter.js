@@ -4,29 +4,44 @@
  * want. Such as into a proxie'd response or electron instramentation.
  */
 const rewriter = function(CONFIG) {
-  (function forceHookInnerOuterHTML() {
-    for (const prop of ['innerHTML','outerHTML']) {
-      // Step 1: Get the descriptor
-      const desc = Object.getOwnPropertyDescriptor(Element.prototype, prop);
-      if (!desc) {
-        continue;
-      }
-      // Step 2: Check for a setter
-      const originalSet = desc.set;
-      if (typeof originalSet !== 'function') {
-        continue;
-      }
-      // Step 3: Redefine the property
-      Object.defineProperty(Element.prototype, prop, {
-        configurable: desc.configurable,
-        enumerable:   desc.enumerable,
-        get:          desc.get,
-        set(value) {
-          return originalSet.call(this, value);
-        }
-      });
+  // Robust hook for innerHTML and outerHTML to ensure we catch all sets,
+  // even if other scripts have already hooked them.
+  function applyRobustHook(propName) {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, propName);
+
+    // If there's no descriptor or no setter, we can't hook it.
+    if (!descriptor || typeof descriptor.set !== 'function') {
+      return;
     }
-  })();
+
+    // Avoid re-hooking if we've already applied our hook.
+    if (descriptor.set._isEvalVillainHook) {
+      return;
+    }
+
+    const originalSetter = descriptor.set;
+
+    const newSetter = function(value) {
+      // Call the main EvalVillain hook to process the sink.
+      EvalVillainHook(INTRBUNDLE, `set(Element.${propName})`, [value]);
+
+      // Chain the call to the original setter.
+      return originalSetter.call(this, value);
+    };
+
+    // Flag our new setter to prevent re-hooking.
+    newSetter._isEvalVillainHook = true;
+
+    Object.defineProperty(Element.prototype, propName, {
+      configurable: true, // Keep it configurable.
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set: newSetter
+    });
+  }
+
+  applyRobustHook('innerHTML');
+  applyRobustHook('outerHTML');
 
 	// Filter out known unsupported navigation sinks to avoid warnings.
 	// This is a secondary check; the primary filter is in background.js.
