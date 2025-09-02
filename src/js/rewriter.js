@@ -721,7 +721,7 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
-		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)'];
+		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)', 'value(Element.setAttribute)'];
 
 		// For now, only apply verification to a subset of sinks.
 		if (VERIFIABLE_SINKS.includes(name)) {
@@ -733,22 +733,29 @@ const rewriter = function(CONFIG) {
 			const originalArgs = [...args];
 			let taintedArgIndex = -1;
 
-			if (name === 'value(Element.setAttribute)') {
-				taintedArgIndex = 1;
-			} else { // innerHTML, outerHTML
-				taintedArgIndex = 0;
-			}
+			const SENSITIVE_SINKS = ['value(Element.setAttribute)'];
+			const isSensitive = SENSITIVE_SINKS.includes(name);
 
-			if (typeof args[taintedArgIndex] === 'string') {
-				args[taintedArgIndex] += markerId;
-			}
-
-			try {
-				originalFunc.apply(thisArg, args);
-			} catch (e) {
-				// If it fails, log the original call without verification.
-				console.warn("[EV] Original sink call failed during verification attempt.", e);
-				return false; // Let the default logger handle it.
+			if (isSensitive) {
+				// Ephemeral injection for sensitive sinks
+				const clonedArgs = [...args];
+				clonedArgs[1] += markerId; // Taint the value in the clone
+				try {
+					originalFunc.apply(thisArg, clonedArgs); // Execute with tainted clone for verification
+					originalFunc.apply(thisArg, originalArgs); // Immediately restore state with original args
+				} catch (e) {
+					console.warn("[EV] Ephemeral injection call failed for sink:", name, e);
+					return false; // Fallback to default logger
+				}
+			} else {
+				// Direct injection for safe sinks (innerHTML, outerHTML)
+				args[0] += markerId;
+				try {
+					originalFunc.apply(thisArg, args);
+				} catch (e) {
+					console.warn("[EV] Original sink call failed during verification attempt.", e);
+					return false; // Fallback to default logger
+				}
 			}
 
 			queueMicrotask(() => {
