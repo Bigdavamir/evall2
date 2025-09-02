@@ -688,93 +688,27 @@ const rewriter = function(CONFIG) {
 	* @param {array}	args array of arguments
 	* @returns {boolean} Always returns `false`
 	**/
-	function storeSinkForProbe(name, args, element) {
-		if (!element || !element.tagName) return; // Can't create a sink encoder without an element to act on.
+	function finalizeLog(logCandidate) {
+		const { intrBundle, name, args, fmts, argObj } = logCandidate;
 
-		let encoder = null;
-		const value = args[0];
-		const priority = 2; // DOM modifications are medium priority.
-		let id = '';
-
-		switch (name) {
-			case 'set(Element.innerHTML)':
-				id = `sink:innerHTML:${element.tagName}`;
-				encoder = (marker) => { element.innerHTML = marker; };
-				break;
-			case 'set(Element.outerHTML)':
-				id = `sink:outerHTML:${element.tagName}`;
-				encoder = (marker) => { element.outerHTML = marker; };
-				break;
-			case 'value(Element.setAttribute)':
-			case 'value(Element.setAttributeNS)':
-				const attributeName = args[0];
-				id = `sink:setAttribute:${element.tagName}:${attributeName}`;
-				// We only care about the value being tainted, not the attribute name.
-				encoder = (marker) => { element.setAttribute(attributeName, marker); };
-				break;
-		}
-
-		if (encoder) {
-			window.EV_FOUND_SOURCES.push({
-				id,
-				priority,
-				encoder,
-				value: String(value), // Ensure value is a string for metadata
-				meta: { type: 'sink', param: name, location: location.href }
-			});
-		}
-	}
-
-	function EvalVillainHook(intrBundle, name, args, thisArg) {
-		// Store sink information for the probe feature.
-		storeSinkForProbe(name, args, thisArg);
-
-		const fmts = CONFIG.formats;
-		let argObj = {};
-		try {
-			argObj = getArgs(args);
-		} catch(err) {
-			real.log("%c[ERROR]%c EV args error: %c%s%c on %c%s%c",
-				fmts.interesting.default,
-				fmts.interesting.highlight,
-				fmts.interesting.default, err, fmts.interesting.highlight,
-				fmts.interesting.default, document.location.href, fmts.interesting.highlight
-			);
-			return false;
-		}
-
-		if (argObj.args.length == 0) {
-			return false;
-		}
-
-		// does this call have an interesting result?
-		let format = null;
 		const printers = getInterest(argObj, intrBundle);
+		let format = null;
 
 		if (printers.length > 0) {
 			format = fmts.interesting;
-			if (!format.use) {
-				return false;
-			}
+			if (!format.use) return;
 		} else {
 			format = fmts.title;
-			if (!format.use) {
-				return false;
-			}
+			if (!format.use) return;
 		}
 
 		const titleGrp = printTitle(name, format, argObj.len);
 		printArgs(argObj);
+		printers.forEach(p => p());
 
-		// print all intereresting reuslts
-		printers.forEach(x=>x());
-
-		// stack display
-		// don't put this into a function, it will be one more thing on the call
-		// stack
 		const stackFormat = CONFIG.formats.stack;
 		if (stackFormat.use) {
-			const stackTitle = "%cstack: "
+			const stackTitle = "%cstack: ";
 			if (stackFormat.open) {
 				real.logGroup(stackTitle, stackFormat.default);
 			} else {
@@ -784,7 +718,70 @@ const rewriter = function(CONFIG) {
 			real.logGroupEnd(stackTitle);
 		}
 		real.logGroupEnd(titleGrp);
-		return false;
+	}
+
+	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
+		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)', 'value(Element.setAttribute)'];
+
+		// For now, only apply verification to a subset of sinks.
+		if (VERIFIABLE_SINKS.includes(name)) {
+			const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
+			const originalArgs = [...args];
+			let taintedArgIndex = -1;
+
+			if (name === 'value(Element.setAttribute)') {
+				taintedArgIndex = 1;
+			} else { // innerHTML, outerHTML
+				taintedArgIndex = 0;
+			}
+
+			if (typeof args[taintedArgIndex] === 'string') {
+				args[taintedArgIndex] += markerId;
+			}
+
+			try {
+				originalFunc.apply(thisArg, args);
+			} catch (e) {
+				// If it fails, log the original call without verification.
+				console.warn("[EV] Original sink call failed during verification attempt.", e);
+				return false; // Let the default logger handle it.
+			}
+
+			queueMicrotask(() => {
+				let verified = false;
+				if (name === 'value(Element.setAttribute)') {
+					if (thisArg && typeof thisArg.getAttribute === 'function') {
+						const attrValue = thisArg.getAttribute(originalArgs[0]);
+						if (attrValue && attrValue.includes(markerId)) {
+							verified = true;
+						}
+					}
+				} else { // innerHTML / outerHTML
+					if (document.documentElement.innerHTML.includes(markerId)) {
+						verified = true;
+					}
+				}
+
+				if (verified) {
+					const argObj = getArgs(originalArgs);
+					if (argObj.args.length > 0) {
+						finalizeLog({
+							intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj
+						});
+					}
+				}
+			});
+
+			return true; // We handled the call.
+		}
+
+		// --- Default logging for non-verifiable sinks ---
+		const argObj = getArgs(args);
+		if (argObj.args.length > 0) {
+			finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
+		}
+
+		return false; // We did not handle the call, let the proxy do it.
 	}
 
 	class evProxy {
@@ -794,14 +791,18 @@ const rewriter = function(CONFIG) {
 
 		// Start of Eval Villain hook
 		apply(_target, _thisArg, args) {
-			EvalVillainHook(self.intr, this.evname, args, _thisArg);
-			return Reflect.apply(...arguments);
+			const handled = EvalVillainHook(self.intr, this.evname, args, _thisArg, _target);
+			if (!handled) {
+				return Reflect.apply(...arguments);
+			}
 		}
 
 		// Start of Eval Villain hook
 		construct(_target, args, _newArg) {
-			EvalVillainHook(self.intr, this.evname, args, _newArg);
-			return Reflect.construct(...arguments);
+			const handled = EvalVillainHook(self.intr, this.evname, args, _newArg, _target);
+			if (!handled) {
+				return Reflect.construct(...arguments);
+			}
 		}
 	}
 
