@@ -517,65 +517,31 @@ function handleMessage(request, _sender, _sendResponse) {
 	} else if (request === "getScriptInfo") {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
-		// Generate the marker in the background script to ensure it's defined.
 		const marker = `EV_SAFE_PROBE_${Date.now()}_${Math.random().toString(36).substr(2,9)}`;
 
+		// This probe code is injected into the page.
+		// It sets the global marker and then calls the encoders.
 		const probeCode = `
-			(function runOptimizedProbe(marker) {
-				// Set the global marker for any new-style encoders that rely on it.
+			(function runStressProbe(marker) {
 				window.EV_ACTIVE_MARKER = marker;
-
-				const BATCH_SIZE = 15;
-				const BATCH_DELAY = 50;
-
-				function schedule(callback) {
-					if (window.requestIdleCallback) {
-						requestIdleCallback(callback);
-					} else {
-						setTimeout(callback, BATCH_DELAY);
-					}
-				}
-
 				const sources = window.EV_FOUND_SOURCES || [];
-				if (sources.length === 0) {
-					console.log("[EV] No sources found to probe.");
-					return;
-				}
+				if (sources.length === 0) { return; }
 
 				const uniqueSources = Array.from(new Map(sources.map(s => [s.id, s])).values());
-				uniqueSources.sort((a, b) => a.priority - b.priority);
 
-				console.log(\`[EV] Running probe with marker: \${marker} on \${uniqueSources.length} unique sources (out of \${sources.length} total).\`);
-
-				let currentIndex = 0;
-				function processNextBatch() {
-					if (currentIndex >= uniqueSources.length) {
-						console.log("[EV] Probe batches complete. Reloading page...");
-						setTimeout(() => location.reload(), 100);
-						return;
-					}
-
-					console.log(\`[EV DEBUG] Processing batch: item \${currentIndex} of \${uniqueSources.length}\`);
-					const batch = uniqueSources.slice(currentIndex, currentIndex + BATCH_SIZE);
-
-					for (const src of batch) {
+				for (const src of uniqueSources) {
+					if (typeof src.encoder === 'function') {
 						try {
-							if (typeof src.encoder === 'function') {
-								// Call encoder with the marker. The encoder's default parameter
-								// will handle cases where it's not passed.
-								src.encoder(marker);
-							}
+							// The encoder will now use the global marker by default.
+							// We can still pass it for backward compatibility if needed.
+							src.encoder(marker);
 						} catch (e) {
 							console.warn("Probe encode failed for source:", src, e);
 						}
 					}
-
-					currentIndex += BATCH_SIZE;
-					schedule(processNextBatch);
 				}
-
-				schedule(processNextBatch);
-
+				console.log(\`[EV] Probe complete for \${uniqueSources.length} sources.\`);
+				setTimeout(() => location.reload(), 100);
 			})(${JSON.stringify(marker)});
 		`;
 
