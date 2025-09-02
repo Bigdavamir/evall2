@@ -747,7 +747,7 @@ const rewriter = function(CONFIG) {
 		}
 	}
 
-	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
+	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc, callType = 'apply') {
 		// If originalFunc is not a function (e.g., from a robust hook on a property),
 		// we can't and shouldn't execute it. Just log the attempt and exit.
 		if (typeof originalFunc !== 'function') {
@@ -767,6 +767,14 @@ const rewriter = function(CONFIG) {
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
+		// Helper to abstract away the apply/construct logic.
+		const executeOriginal = (func, context, funcArgs) => {
+			if (callType === 'construct') {
+				return Reflect.construct(func, funcArgs);
+			}
+			return Reflect.apply(func, context, funcArgs);
+		};
+
 		try {
 			switch (name) {
 				// Execution Sinks
@@ -776,7 +784,7 @@ const rewriter = function(CONFIG) {
 				case 'setInterval':
 					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
 						modifiedArgs[0] = injectJsMarker(originalArgs[0], markerId);
-						const result = originalFunc.apply(thisArg, modifiedArgs);
+						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
 						scheduleDomLogging(taskToLog);
 						return result;
 					}
@@ -789,14 +797,10 @@ const rewriter = function(CONFIG) {
 				case 'set(Element.outerHTML)':
 					if (typeof originalArgs[0] === 'string') {
 						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
-						const result = originalFunc.apply(thisArg, modifiedArgs); // Apply with marker
+						const result = executeOriginal(originalFunc, thisArg, modifiedArgs); // Apply with marker
 						scheduleDomLogging(() => {
 							taskToLog();
 							// Cleanup Note: For these specific sinks, a "restore" action is not performed.
-							// - For document.write, there is no state to restore to.
-							// - For innerHTML/outerHTML, restoring the original HTML would be highly
-							//   destructive, erasing the content that was just set.
-							// Therefore, the injected marker is left in the DOM as a trace.
 						});
 						return result;
 					}
@@ -807,11 +811,10 @@ const rewriter = function(CONFIG) {
 				case 'set(Element.innerText)':
 					if (typeof originalArgs[0] === 'string') {
 						modifiedArgs[0] = `${originalArgs[0]}${markerId}`;
-						const result = originalFunc.apply(thisArg, modifiedArgs);
+						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
-							// Cleanup: restore the original value after logging
-							originalFunc.apply(thisArg, originalArgs);
+							executeOriginal(originalFunc, thisArg, originalArgs); // Restore
 						});
 						return result;
 					}
@@ -824,9 +827,8 @@ const rewriter = function(CONFIG) {
 					const nodeToInsert = originalArgs[0];
 					if (nodeToInsert && nodeToInsert.nodeType === 1) {
 						const comment = document.createComment(markerId);
-						// Append marker as the last child to avoid shifting layout
 						nodeToInsert.appendChild(comment);
-						const result = originalFunc.apply(thisArg, originalArgs);
+						const result = executeOriginal(originalFunc, thisArg, originalArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
 							comment.remove();
@@ -838,7 +840,7 @@ const rewriter = function(CONFIG) {
 				case 'value(Range.createContextualFragment)':
 					if (typeof originalArgs[0] === 'string') {
 						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
-						const result = originalFunc.apply(thisArg, modifiedArgs);
+						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
 						scheduleDomLogging(taskToLog);
 						return result;
 					}
@@ -853,12 +855,12 @@ const rewriter = function(CONFIG) {
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
-						// Safe Injection: add a data-* attribute and a comment node for visibility.
+						// Safe Injection
 						const markerAttrName = `data-ev-marker-${attrName}`;
 						const comment = document.createComment(markerId);
 						thisArg.setAttribute(markerAttrName, markerId);
 						thisArg.appendChild(comment);
-						const attrResult = originalFunc.apply(thisArg, originalArgs);
+						const attrResult = executeOriginal(originalFunc, thisArg, originalArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
 							thisArg.removeAttribute(markerAttrName);
@@ -866,13 +868,13 @@ const rewriter = function(CONFIG) {
 						});
 						return attrResult;
 					} else {
-						// Ephemeral Injection for non-sensitive attributes
+						// Ephemeral Injection
 						if (typeof originalArgs[valueIndex] === 'string') {
 							modifiedArgs[valueIndex] = `${originalArgs[valueIndex]}${markerId}`;
-							const attrResult = originalFunc.apply(thisArg, modifiedArgs);
+							const attrResult = executeOriginal(originalFunc, thisArg, modifiedArgs);
 							scheduleDomLogging(() => {
 								taskToLog();
-								originalFunc.apply(thisArg, originalArgs); // Restore
+								executeOriginal(originalFunc, thisArg, originalArgs); // Restore
 							});
 							return attrResult;
 						}
@@ -884,7 +886,7 @@ const rewriter = function(CONFIG) {
 		}
 
 		// Default Behavior
-		const result = originalFunc.apply(thisArg, originalArgs);
+		const result = executeOriginal(originalFunc, thisArg, originalArgs);
 		scheduleDomLogging(taskToLog);
 		return result;
 	}
@@ -897,7 +899,7 @@ const rewriter = function(CONFIG) {
 		apply(target, thisArg, args) {
 			try {
 				// The hook is responsible for all logic, including calling the original.
-				return EvalVillainHook(self.intr, this.evname, args, thisArg, target);
+				return EvalVillainHook(self.intr, this.evname, args, thisArg, target, 'apply');
 			} catch (e) {
 				real.warn('[EV] Hook failed unexpectedly. Calling original function directly.', e);
 				return Reflect.apply(target, thisArg, args);
@@ -907,7 +909,7 @@ const rewriter = function(CONFIG) {
 		construct(target, args, newArg) {
 			try {
 				// The hook is responsible for all logic, including calling the original.
-				return EvalVillainHook(self.intr, this.evname, args, newArg, target);
+				return EvalVillainHook(self.intr, this.evname, args, newArg, target, 'construct');
 			} catch (e) {
 				real.warn('[EV] Hook failed unexpectedly. Calling original constructor directly.', e);
 				return Reflect.construct(target, args, newArg);
