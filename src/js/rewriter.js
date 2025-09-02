@@ -4,6 +4,9 @@
  * want. Such as into a proxie'd response or electron instramentation.
  */
 const rewriter = function(CONFIG) {
+	const USER_SOURCE_KEY = 'eval_villain_user_sources';
+	const MAX_USER_SOURCES = 50;
+
 	// handled this way to preserve encoding...
 	function getAllQueryParams(search) {
 		return search.substr(search[0] == '?'? 1: 0)
@@ -967,9 +970,6 @@ const rewriter = function(CONFIG) {
 		document.location.origin,
 		CONFIG.formats.interesting.default
 	);
-
-	const USER_SOURCE_KEY = 'eval_villain_user_sources';
-	const MAX_USER_SOURCES = 50;
 
 	function saveUserSource(sObj) {
 		try {
