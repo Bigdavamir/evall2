@@ -725,6 +725,10 @@ const rewriter = function(CONFIG) {
 
 		// For now, only apply verification to a subset of sinks.
 		if (VERIFIABLE_SINKS.includes(name)) {
+			if (typeof originalFunc !== 'function') {
+				console.warn("[EV] No original function found for sink:", name);
+				return false; // Fallback to default proxy behavior
+			}
 			const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
 			const originalArgs = [...args];
 			let taintedArgIndex = -1;
