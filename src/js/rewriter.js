@@ -721,46 +721,31 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
+		// --- Fallback for non-function originalFunc ---
+		if (typeof originalFunc !== 'function') {
+			console.warn("[EV] No original function found for sink:", name);
+			const argObj = getArgs(args);
+			if (argObj.args.length > 0) {
+				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
+			}
+			return false; // Let proxy handle it
+		}
+
 		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
-		// This function now returns true if it handled the call and verification,
-		// or false if the default proxy behavior (Reflect.apply) should proceed.
-		const handleCallAndVerify = () => {
-			try {
-				originalFunc.apply(thisArg, modifiedArgs);
-			} catch (e) {
-				console.warn(`[EV] Marker injection failed for sink: ${name}`, e);
-				return false; // Let the default logger handle the original args.
-			}
-
-			queueMicrotask(() => {
-				if (document.documentElement.innerHTML.includes(markerId)) {
-					const argObj = getArgs(originalArgs);
-					if (argObj.args.length > 0) {
-						finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj });
-					}
-				}
-			});
-			return true; // We handled the call.
-		};
-
 		// --- Context-Aware Marker Injection Logic ---
+		let injectionType = 'none';
+
 		switch (name) {
 			case 'eval':
 			case 'Function':
-				if (typeof modifiedArgs[0] === 'string') {
-					modifiedArgs[0] = `${originalArgs[0]}\n/*${markerId}*/`;
-					return handleCallAndVerify();
-				}
-				break;
-
 			case 'setTimeout':
 			case 'setInterval':
 				if (typeof modifiedArgs[0] === 'string') {
 					modifiedArgs[0] = `${originalArgs[0]}\n/*${markerId}*/`;
-					return handleCallAndVerify();
+					injectionType = 'js_comment';
 				}
 				break;
 
