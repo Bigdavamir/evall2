@@ -1133,102 +1133,103 @@ const rewriter = function(CONFIG) {
 
 	// [VF-PATCH:PassiveInputListener] START
 	function setupPassiveInputListener() {
-		const targetNode = document.body;
-		if (!targetNode) {
-			// In some environments (like when running in a worker), body may not be available.
-			return;
-		}
+		real.log('[EV-DEBUG] setupPassiveInputListener function called.');
 
-		const observerConfig = { childList: true, subtree: true };
-		const SELECTORS = 'input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], textarea, [contenteditable="true"]';
-
-		// Function to find all target elements in a node's light and shadow DOMs
-		const addListenersToNode = (node) => {
-			if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-			const elementsToProcess = new Set();
-
-			// Find elements in the node's light DOM
-			node.querySelectorAll(SELECTORS).forEach(el => elementsToProcess.add(el));
-
-			// Find elements in the shadow DOM of the node itself and all its descendants
-			const allNodes = [node, ...node.querySelectorAll('*')];
-			allNodes.forEach(el => {
-				if (el.shadowRoot) {
-					el.shadowRoot.querySelectorAll(SELECTORS).forEach(shadowEl => elementsToProcess.add(shadowEl));
-				}
-			});
-
-			elementsToProcess.forEach(el => attachListeners(el));
-		};
-
-		const mutationCallback = (mutationsList) => {
-			for (const mutation of mutationsList) {
-				if (mutation.type === 'childList') {
-					mutation.addedNodes.forEach(node => addListenersToNode(node));
-				}
-			}
-		};
-
-		const observer = new MutationObserver(mutationCallback);
-		addListenersToNode(targetNode);
-		observer.observe(targetNode, observerConfig);
-
-		const lastValueMap = new WeakMap();
-		const debounceMap = new WeakMap();
-
-		function attachListeners(element) {
-			if (element.dataset.evListenersAttached) return;
-			real.log(`[EV-DEBUG] Attaching listeners to:`, element);
-			element.addEventListener('input', eventHandler);
-			element.addEventListener('change', eventHandler);
-			element.addEventListener('keyup', eventHandler);
-			element.dataset.evListenersAttached = true;
-		}
-
-		function eventHandler(event) {
-			real.log(`[EV-DEBUG] Event triggered: ${event.type}`, event.target);
-			const element = event.target;
-			const value = element.isContentEditable ? element.textContent : element.value;
-
-			// Duplicate prevention
-			if (lastValueMap.get(element) === value) {
-				real.log(`[EV-DEBUG] Duplicate value skipped: "${value}"`);
+		const startListener = () => {
+			real.log('[EV-DEBUG] DOM is ready, starting listener setup...');
+			const targetNode = document.body;
+			if (!targetNode) {
+				real.log('[EV-DEBUG] Catastrophic failure: document.body not found even after DOMContentLoaded.');
 				return;
 			}
-			lastValueMap.set(element, value);
 
-			// [VF-PATCH:PassiveInputDebounce] START
-			if (debounceMap.has(element)) {
-				clearTimeout(debounceMap.get(element));
-			}
-			real.log(`[EV-DEBUG] Setting debounce timer for value: "${value}"`);
-			const timeoutId = setTimeout(() => {
-				processValue(element, value);
-			}, 250);
-			debounceMap.set(element, timeoutId);
-			// [VF-PATCH:PassiveInputDebounce] END
-		}
+			const observerConfig = { childList: true, subtree: true };
+			const SELECTORS = 'input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], textarea, [contenteditable="true"]';
 
-		function processValue(element, value) {
-			real.log(`[EV-DEBUG] Processing value: "${value}"`, element);
-			// [VF-PATCH:PassiveInputSizeLimit] START
-			const MAX_PASSIVE_INPUT_SIZE = 10000;
-			if (value.length > MAX_PASSIVE_INPUT_SIZE) {
-				real.log(`[EV-DEBUG] Value skipped due to size limit.`);
-				return; // Skip oversized input
-			}
-			// [VF-PATCH:PassiveInputSizeLimit] END
-
-			const sObj = {
-				search: value,
-				timestamp: new Date().toISOString(),
-				origin: location.origin,
-				display: element.tagName.toLowerCase() + (element.id ? `#${element.id}` : '')
+			const addListenersToNode = (node) => {
+				if (node.nodeType !== Node.ELEMENT_NODE) return;
+				const elementsToProcess = new Set();
+				node.querySelectorAll(SELECTORS).forEach(el => elementsToProcess.add(el));
+				const allNodes = [node, ...node.querySelectorAll('*')];
+				allNodes.forEach(el => {
+					if (el.shadowRoot) {
+						el.shadowRoot.querySelectorAll(SELECTORS).forEach(shadowEl => elementsToProcess.add(shadowEl));
+					}
+				});
+				elementsToProcess.forEach(el => attachListeners(el));
 			};
 
-			real.log(`[EV-DEBUG] Calling addToFifo with:`, sObj);
-			addToFifo(sObj, 'userSource');
+			const mutationCallback = (mutationsList) => {
+				for (const mutation of mutationsList) {
+					if (mutation.type === 'childList') {
+						mutation.addedNodes.forEach(node => addListenersToNode(node));
+					}
+				}
+			};
+
+			const observer = new MutationObserver(mutationCallback);
+			addListenersToNode(targetNode);
+			observer.observe(targetNode, observerConfig);
+
+			const lastValueMap = new WeakMap();
+			const debounceMap = new WeakMap();
+
+			function attachListeners(element) {
+				if (element.dataset.evListenersAttached) return;
+				real.log(`[EV-DEBUG] Attaching listeners to:`, element);
+				element.addEventListener('input', eventHandler);
+				element.addEventListener('change', eventHandler);
+				element.addEventListener('keyup', eventHandler);
+				element.dataset.evListenersAttached = true;
+			}
+
+			function eventHandler(event) {
+				real.log(`[EV-DEBUG] Event triggered: ${event.type}`, event.target);
+				const element = event.target;
+				const value = element.isContentEditable ? element.textContent : element.value;
+
+				if (lastValueMap.get(element) === value) {
+					real.log(`[EV-DEBUG] Duplicate value skipped: "${value}"`);
+					return;
+				}
+				lastValueMap.set(element, value);
+
+				if (debounceMap.has(element)) {
+					clearTimeout(debounceMap.get(element));
+				}
+				real.log(`[EV-DEBUG] Setting debounce timer for value: "${value}"`);
+				const timeoutId = setTimeout(() => {
+					processValue(element, value);
+				}, 250);
+				debounceMap.set(element, timeoutId);
+			}
+
+			function processValue(element, value) {
+				real.log(`[EV-DEBUG] Processing value: "${value}"`, element);
+				const MAX_PASSIVE_INPUT_SIZE = 10000;
+				if (value.length > MAX_PASSIVE_INPUT_SIZE) {
+					real.log(`[EV-DEBUG] Value skipped due to size limit.`);
+					return;
+				}
+
+				const sObj = {
+					search: value,
+					timestamp: new Date().toISOString(),
+					origin: location.origin,
+					display: element.tagName.toLowerCase() + (element.id ? `#${element.id}` : '')
+				};
+
+				real.log(`[EV-DEBUG] Calling addToFifo with:`, sObj);
+				addToFifo(sObj, 'userSource');
+			}
+		};
+
+		if (document.readyState === 'loading') {
+			real.log('[EV-DEBUG] DOM not ready, waiting for DOMContentLoaded.');
+			document.addEventListener('DOMContentLoaded', startListener);
+		} else {
+			real.log('[EV-DEBUG] DOM already ready, starting listener setup immediately.');
+			startListener();
 		}
 	}
 	setupPassiveInputListener();
