@@ -516,6 +516,28 @@ function handleMessage(request, _sender, _sendResponse) {
 		}
 	} else if (request === "getScriptInfo") {
 		return getConfigForRegister();
+	} else if (request.type === "stress-probe") {
+		browser.tabs.executeScript({
+			code: `
+				(function runStressProbe(marker) {
+					if (!window.EV_FOUND_SOURCES) {
+						console.log("[EV] No sources found to probe.");
+						return;
+					}
+					console.log(\`[EV] Running probe with marker: \${marker}\`);
+					for (let src of window.EV_FOUND_SOURCES) {
+						try {
+							if (typeof src.encoder === 'function') {
+								src.encoder(marker);
+							}
+						} catch (e) {
+							console.warn("Probe encode failed for source:", src, e);
+						}
+					}
+					location.reload();
+				})("AMIR");
+			`
+		});
 	} else {
 		const er = `unkown msg: ${request}`;
 		console.error(er);

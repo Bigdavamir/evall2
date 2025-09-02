@@ -155,7 +155,13 @@ function listener(ev) {
 		return
 	}
 
-	if (["h1-functions", "h1-targets", "h1-enable",	"h1-autoOpen", "h1-onOff", "h1-blacklist",	"h1-needles", "h1-types"].includes(id)) {
+	if (id === "probe-btn") {
+		browser.runtime.sendMessage({ type: "stress-probe" });
+		window.close();
+		return;
+	}
+
+	if (["h1-functions", "h1-targets", "h1-enable",	"h1-autoOpen", "h1-onOff", "h1-blacklist",	"h1-needles", "h1-types", "h1-probe"].includes(id)) {
 		let sub = id.substr(3);
 		let formats = document.getElementById(sub);
 		formats.classList.toggle('closed');
