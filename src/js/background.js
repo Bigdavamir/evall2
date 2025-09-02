@@ -437,7 +437,6 @@ async function getConfigForRegister() {
 	if (match.length === 0) {
 		match.push("<all_urls>");
 	}
-	debugLog("[EV DEBUG] matches: %s", match);
 	return [config, match];
 }
 
