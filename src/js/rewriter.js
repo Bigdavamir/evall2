@@ -721,122 +721,102 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
-		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)', 'value(Element.setAttribute)'];
+		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
+		const originalArgs = [...args];
+		const modifiedArgs = [...args];
 
-		// For now, only apply verification to a subset of sinks.
-		if (VERIFIABLE_SINKS.includes(name)) {
-			if (typeof originalFunc !== 'function') {
-				console.warn("[EV] No original function found for sink:", name);
-				return false; // Fallback to default proxy behavior
-			}
-			const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
-			const originalArgs = [...args];
-
-			if (name === 'value(Element.setAttribute)') {
-				const SENSITIVE_ATTRS = [
-					'width', 'height', 'maxlength', 'size', 'rows', 'cols',
-					'integrity', 'nonce', 'viewBox', 'preserveAspectRatio'
-				];
-				const attrName = originalArgs[0];
-
-				if (SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
-					// Safe injection for format-sensitive attributes
-					try {
-						originalFunc.apply(thisArg, [`data-ev-marker`, markerId]); // Set marker on a side-attribute
-						originalFunc.apply(thisArg, originalArgs); // Set the real attribute with the clean value
-					} catch (e) {
-						console.warn("[EV] Safe marker injection call failed for sink:", name, e);
-						return false;
-					}
-				} else {
-					// Ephemeral injection for other attributes
-					const clonedArgs = [...args];
-					if (typeof clonedArgs[1] === 'string') {
-						clonedArgs[1] += markerId;
-					}
-					try {
-						originalFunc.apply(thisArg, clonedArgs);
-						originalFunc.apply(thisArg, originalArgs);
-					} catch (e) {
-						console.warn("[EV] Ephemeral injection call failed for sink:", name, e);
-						return false;
-					}
-				}
-			} else {
-				// Direct injection for safe sinks (innerHTML, outerHTML)
-				if (typeof args[0] === 'string') {
-					args[0] += markerId;
-				}
-				try {
-					originalFunc.apply(thisArg, args);
-				} catch (e) {
-					console.warn("[EV] Original sink call failed during verification attempt.", e);
-					return false;
-				}
+		// This function now returns true if it handled the call and verification,
+		// or false if the default proxy behavior (Reflect.apply) should proceed.
+		const handleCallAndVerify = () => {
+			try {
+				originalFunc.apply(thisArg, modifiedArgs);
+			} catch (e) {
+				console.warn(`[EV] Marker injection failed for sink: ${name}`, e);
+				return false; // Let the default logger handle the original args.
 			}
 
 			queueMicrotask(() => {
-				let verified = false;
-				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce'];
-				const attrName = originalArgs[0];
-
-				try {
-					if (name === 'value(Element.setAttribute)' && SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
-						// Verification and cleanup for sensitive attributes
-						if (thisArg && thisArg.hasAttribute('data-ev-marker') && thisArg.getAttribute('data-ev-marker') === markerId) {
-							verified = true;
-						}
-						if (thisArg && thisArg.hasAttribute('data-ev-marker')) {
-							thisArg.removeAttribute('data-ev-marker');
-						}
-					} else {
-						// Standard verification for other sinks
-						switch (name) {
-							case 'value(Element.setAttribute)':
-								if (thisArg && typeof thisArg.getAttribute === 'function' && thisArg.getAttribute(attrName)?.includes(markerId)) {
-									verified = true;
-								}
-								break;
-							case 'set(Element.innerHTML)':
-								if (thisArg && thisArg.innerHTML.includes(markerId)) {
-									verified = true;
-								}
-								break;
-							case 'set(Element.outerHTML)':
-								if (thisArg && thisArg.parentElement && thisArg.parentElement.innerHTML.includes(markerId)) {
-									verified = true;
-								}
-								break;
-						}
-					}
-				} catch (e) {
-					// Fallback for safety
-					if (document.documentElement.innerHTML.includes(markerId)) {
-						verified = true;
-						console.warn("[EV] Verification fell back to document search for sink:", name);
-					}
-				}
-
-				if (verified) {
+				if (document.documentElement.innerHTML.includes(markerId)) {
 					const argObj = getArgs(originalArgs);
 					if (argObj.args.length > 0) {
-						finalizeLog({
-							intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj
-						});
+						finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj });
 					}
 				}
 			});
-
 			return true; // We handled the call.
+		};
+
+		// --- Context-Aware Marker Injection Logic ---
+		switch (name) {
+			case 'eval':
+			case 'Function':
+				if (typeof modifiedArgs[0] === 'string') {
+					modifiedArgs[0] = `${originalArgs[0]}\n/*${markerId}*/`;
+					return handleCallAndVerify();
+				}
+				break;
+
+			case 'setTimeout':
+			case 'setInterval':
+				if (typeof modifiedArgs[0] === 'string') {
+					modifiedArgs[0] = `${originalArgs[0]}\n/*${markerId}*/`;
+					return handleCallAndVerify();
+				}
+				break;
+
+			case 'set(Element.innerHTML)':
+			case 'set(Element.outerHTML)':
+				if (typeof modifiedArgs[0] === 'string') {
+					modifiedArgs[0] = `${originalArgs[0]}<!--${markerId}-->`;
+					return handleCallAndVerify();
+				}
+				break;
+
+			case 'value(Element.setAttribute)':
+				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce', 'viewBox', 'preserveAspectRatio'];
+				const attrName = originalArgs[0];
+				if (SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
+					// Use side-attribute injection for sensitive attributes
+					try {
+						originalFunc.apply(thisArg, [`data-ev-marker`, markerId]);
+						originalFunc.apply(thisArg, originalArgs); // Restore
+						queueMicrotask(() => {
+							if (thisArg && thisArg.hasAttribute('data-ev-marker')) {
+								finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj: getArgs(originalArgs) });
+								thisArg.removeAttribute('data-ev-marker');
+							}
+						});
+						return true; // Handled
+					} catch (e) {
+						console.warn(`[EV] Safe marker injection failed for ${attrName}`, e);
+					}
+				} else {
+					// Use ephemeral injection for non-sensitive attributes
+					if (typeof modifiedArgs[1] === 'string') {
+						modifiedArgs[1] += markerId;
+						try {
+							originalFunc.apply(thisArg, modifiedArgs);
+							originalFunc.apply(thisArg, originalArgs); // Restore
+							queueMicrotask(() => {
+								if (thisArg && thisArg.getAttribute(attrName)?.includes(markerId)) {
+									finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj: getArgs(originalArgs) });
+								}
+							});
+							return true; // Handled
+						} catch (e) {
+							console.warn(`[EV] Ephemeral injection failed for ${attrName}`, e);
+						}
+					}
+				}
+				break;
 		}
 
-		// --- Default logging for non-verifiable sinks ---
+		// --- Fallback to default logging for all other sinks ---
 		const argObj = getArgs(args);
 		if (argObj.args.length > 0) {
 			finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
 		}
-
-		return false; // We did not handle the call, let the proxy do it.
+		return false; // Let the proxy call the original function.
 	}
 
 	class evProxy {
