@@ -733,7 +733,10 @@ const rewriter = function(CONFIG) {
 			const originalArgs = [...args];
 
 			if (name === 'value(Element.setAttribute)') {
-				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce'];
+				const SENSITIVE_ATTRS = [
+					'width', 'height', 'maxlength', 'size', 'rows', 'cols',
+					'integrity', 'nonce', 'viewBox', 'preserveAspectRatio'
+				];
 				const attrName = originalArgs[0];
 
 				if (SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
