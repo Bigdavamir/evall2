@@ -1142,55 +1142,48 @@ const rewriter = function(CONFIG) {
 		const observerConfig = { childList: true, subtree: true };
 		const SELECTORS = 'input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], textarea, [contenteditable="true"]';
 
-		// Function to add listeners to a given node and its shadow DOM
+		// Function to find all target elements in a node's light and shadow DOMs
 		const addListenersToNode = (node) => {
 			if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-			// Find all target elements within the node itself
-			const elements = node.querySelectorAll(SELECTORS);
-			elements.forEach(el => attachListeners(el));
+			const elementsToProcess = new Set();
 
-			// If the node has a shadow root, search within it as well
-			if (node.shadowRoot) {
-				const shadowElements = node.shadowRoot.querySelectorAll(SELECTORS);
-				shadowElements.forEach(el => attachListeners(el));
-			}
+			// Find elements in the node's light DOM
+			node.querySelectorAll(SELECTORS).forEach(el => elementsToProcess.add(el));
 
-			// Also check all descendant nodes for shadow roots
-			const allDescendants = node.querySelectorAll('*');
-			allDescendants.forEach(descendant => {
-				if (descendant.shadowRoot) {
-					const shadowElements = descendant.shadowRoot.querySelectorAll(SELECTORS);
-					shadowElements.forEach(el => attachListeners(el));
+			// Find elements in the shadow DOM of the node itself and all its descendants
+			const allNodes = [node, ...node.querySelectorAll('*')];
+			allNodes.forEach(el => {
+				if (el.shadowRoot) {
+					el.shadowRoot.querySelectorAll(SELECTORS).forEach(shadowEl => elementsToProcess.add(shadowEl));
 				}
 			});
+
+			elementsToProcess.forEach(el => attachListeners(el));
 		};
 
-		// The MutationObserver callback
-		const mutationCallback = (mutationsList, _observer) => {
+		const mutationCallback = (mutationsList) => {
 			for (const mutation of mutationsList) {
 				if (mutation.type === 'childList') {
-					mutation.addedNodes.forEach(node => {
-						addListenersToNode(node);
-					});
+					mutation.addedNodes.forEach(node => addListenersToNode(node));
 				}
 			}
 		};
 
 		const observer = new MutationObserver(mutationCallback);
-
-		// Initial run on the existing DOM
 		addListenersToNode(targetNode);
-
-		// Start observing the target node for configured mutations
 		observer.observe(targetNode, observerConfig);
 
 		const lastValueMap = new WeakMap();
 		const debounceMap = new WeakMap();
 
 		function attachListeners(element) {
+			if (element.dataset.evListenersAttached) return;
+
 			element.addEventListener('input', eventHandler);
 			element.addEventListener('change', eventHandler);
+			element.addEventListener('keyup', eventHandler);
+			element.dataset.evListenersAttached = true;
 		}
 
 		function eventHandler(event) {
