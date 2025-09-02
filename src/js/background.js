@@ -50,18 +50,6 @@ const defaultConfig = {
 			"enabled": true,
 			"pattern": "set(CSSStyleDeclaration.cssText)"
 		}, {
-			"name": "window.location.href",
-			"enabled": true,
-			"pattern": "set(Location.href)"
-		}, {
-			"name": "Location.assign",
-			"enabled": true,
-			"pattern": "value(Location.assign)"
-		}, {
-			"name": "Location.replace",
-			"enabled": true,
-			"pattern": "value(Location.replace)"
-		}, {
 			"name": "HTMLIFrameElement.src",
 			"enabled": true,
 			"pattern": "set(HTMLIFrameElement.src)"
