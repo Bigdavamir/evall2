@@ -517,25 +517,32 @@ function handleMessage(request, _sender, _sendResponse) {
 	} else if (request === "getScriptInfo") {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
+		const probeCode = `
+			(function runStressProbe(marker) {
+				if (!window.EV_FOUND_SOURCES || window.EV_FOUND_SOURCES.length === 0) {
+					console.log("[EV] No sources found to probe.");
+					return;
+				}
+				console.log(\`[EV] Running probe with marker: \${marker}\`);
+				for (const src of window.EV_FOUND_SOURCES) {
+					try {
+						if (typeof src.encoder === 'function') {
+							src.encoder(marker);
+						}
+					} catch (e) {
+						console.warn("Probe encode failed for source:", src, e);
+					}
+				}
+				location.reload();
+			})("AMIR");
+		`;
+
 		browser.tabs.executeScript({
 			code: `
-				(function runStressProbe(marker) {
-					if (!window.EV_FOUND_SOURCES) {
-						console.log("[EV] No sources found to probe.");
-						return;
-					}
-					console.log(\`[EV] Running probe with marker: \${marker}\`);
-					for (let src of window.EV_FOUND_SOURCES) {
-						try {
-							if (typeof src.encoder === 'function') {
-								src.encoder(marker);
-							}
-						} catch (e) {
-							console.warn("Probe encode failed for source:", src, e);
-						}
-					}
-					location.reload();
-				})("AMIR");
+				const s = document.createElement('script');
+				s.textContent = ${JSON.stringify(probeCode)};
+				(document.head || document.documentElement).appendChild(s);
+				s.remove();
 			`
 		});
 	} else {
