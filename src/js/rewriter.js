@@ -749,16 +749,30 @@ const rewriter = function(CONFIG) {
 
 			queueMicrotask(() => {
 				let verified = false;
-				if (name === 'value(Element.setAttribute)') {
-					if (thisArg && typeof thisArg.getAttribute === 'function') {
-						const attrValue = thisArg.getAttribute(originalArgs[0]);
-						if (attrValue && attrValue.includes(markerId)) {
-							verified = true;
-						}
+				try {
+					switch (name) {
+						case 'value(Element.setAttribute)':
+							if (thisArg && typeof thisArg.getAttribute === 'function' && thisArg.getAttribute(originalArgs[0])?.includes(markerId)) {
+								verified = true;
+							}
+							break;
+						case 'set(Element.innerHTML)':
+							if (thisArg && thisArg.innerHTML.includes(markerId)) {
+								verified = true;
+							}
+							break;
+						case 'set(Element.outerHTML)':
+							// After outerHTML, the original element reference is gone. Check the parent.
+							if (thisArg && thisArg.parentElement && thisArg.parentElement.innerHTML.includes(markerId)) {
+								verified = true;
+							}
+							break;
 					}
-				} else { // innerHTML / outerHTML
+				} catch (e) {
+					// Fallback for safety, e.g., if element was removed from DOM.
 					if (document.documentElement.innerHTML.includes(markerId)) {
 						verified = true;
+						console.warn("[EV] Verification fell back to document search for sink:", name);
 					}
 				}
 
