@@ -6,6 +6,44 @@
 const rewriter = function(CONFIG) {
   if (!window.EV_FOUND_SOURCES) window.EV_FOUND_SOURCES = [];
 
+  // Robust hook for property setters to ensure we catch all sets,
+  // even if other scripts have already hooked them.
+  function applyRobustHook(propName) {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, propName);
+
+    // If there's no descriptor or no setter, we can't hook it.
+    if (!descriptor || typeof descriptor.set !== 'function') {
+      return;
+    }
+
+    // Avoid re-hooking if we've already applied our hook.
+    if (descriptor.set._isEvalVillainHook) {
+      return;
+    }
+
+    const originalSetter = descriptor.set;
+
+    const newSetter = function(value) {
+      // Call the main EvalVillain hook to process the sink.
+      // The hook will handle the logic, including calling the original setter.
+      EvalVillainHook(INTRBUNDLE, `set(Element.${propName})`, [value], this, originalSetter);
+    };
+
+    // Flag our new setter to prevent re-hooking.
+    newSetter._isEvalVillainHook = true;
+
+    Object.defineProperty(Element.prototype, propName, {
+      configurable: true, // Keep it configurable.
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set: newSetter
+    });
+  }
+
+  applyRobustHook('innerHTML');
+  applyRobustHook('outerHTML');
+  applyRobustHook('textContent');
+  applyRobustHook('innerText');
 
 	// Filter out known unsupported navigation sinks to avoid warnings.
 	// This is a secondary check; the primary filter is in background.js.
@@ -710,13 +748,15 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
+		// If originalFunc is not a function (e.g., from a robust hook on a property),
+		// we can't and shouldn't execute it. Just log the attempt and exit.
 		if (typeof originalFunc !== 'function') {
-			real.warn("[EV] No original function found for sink:", name);
+			real.warn("[EV] No original function provided to hook, logging only. Sink:", name);
 			const argObj = getArgs(args);
 			if (argObj.args.length > 0) {
 				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
 			}
-			return Reflect.apply(originalFunc, thisArg, args);
+			return; // Exit safely
 		}
 
 		const logCandidate = {
@@ -742,16 +782,22 @@ const rewriter = function(CONFIG) {
 					}
 					break;
 
-				// HTML / DOM Sinks
+				// HTML Sinks (Ephemeral: Inject -> Apply -> Log -> Cleanup)
 				case 'document.write':
 				case 'document.writeln':
 				case 'set(Element.innerHTML)':
 				case 'set(Element.outerHTML)':
 					if (typeof originalArgs[0] === 'string') {
 						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
-						originalFunc.apply(thisArg, modifiedArgs);
-						const result = originalFunc.apply(thisArg, originalArgs); // Restore
-						scheduleDomLogging(taskToLog);
+						const result = originalFunc.apply(thisArg, modifiedArgs); // Apply with marker
+						scheduleDomLogging(() => {
+							taskToLog();
+							// Cleanup Note: For these specific sinks, a "restore" action is not performed.
+							// - For document.write, there is no state to restore to.
+							// - For innerHTML/outerHTML, restoring the original HTML would be highly
+							//   destructive, erasing the content that was just set.
+							// Therefore, the injected marker is left in the DOM as a trace.
+						});
 						return result;
 					}
 					break;
@@ -760,11 +806,13 @@ const rewriter = function(CONFIG) {
 				case 'set(Element.textContent)':
 				case 'set(Element.innerText)':
 					if (typeof originalArgs[0] === 'string') {
-						// Use simple string injection for text content
 						modifiedArgs[0] = `${originalArgs[0]}${markerId}`;
-						originalFunc.apply(thisArg, modifiedArgs);
-						const result = originalFunc.apply(thisArg, originalArgs); // Restore
-						scheduleDomLogging(taskToLog);
+						const result = originalFunc.apply(thisArg, modifiedArgs);
+						scheduleDomLogging(() => {
+							taskToLog();
+							// Cleanup: restore the original value after logging
+							originalFunc.apply(thisArg, originalArgs);
+						});
 						return result;
 					}
 					break;
@@ -774,10 +822,10 @@ const rewriter = function(CONFIG) {
 				case 'value(Node.insertBefore)':
 				case 'value(Node.replaceChild)':
 					const nodeToInsert = originalArgs[0];
-					// Ensure we are dealing with an element node that can have children.
 					if (nodeToInsert && nodeToInsert.nodeType === 1) {
 						const comment = document.createComment(markerId);
-						nodeToInsert.prepend(comment);
+						// Append marker as the last child to avoid shifting layout
+						nodeToInsert.appendChild(comment);
 						const result = originalFunc.apply(thisArg, originalArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
@@ -799,17 +847,15 @@ const rewriter = function(CONFIG) {
 				// Attribute Sinks
 				case 'value(Element.setAttribute)':
 				case 'value(Element.setAttributeNS)':
-					// Note: setAttributeNS has a namespace arg (originalArgs[0])
 					const isNS = name.includes('NS');
 					const attrName = (isNS ? originalArgs[1] : originalArgs[0])?.toLowerCase();
 					const valueIndex = isNS ? 2 : 1;
-
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
 						// Safe Injection for sensitive attributes
 						const markerAttrName = `data-ev-marker-${attrName}`;
-						thisArg.setAttribute(markerAttrName, markerId); // Use direct setAttribute for the marker
+						thisArg.setAttribute(markerAttrName, markerId);
 						const attrResult = originalFunc.apply(thisArg, originalArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
@@ -820,9 +866,11 @@ const rewriter = function(CONFIG) {
 						// Ephemeral Injection for non-sensitive attributes
 						if (typeof originalArgs[valueIndex] === 'string') {
 							modifiedArgs[valueIndex] = `${originalArgs[valueIndex]}${markerId}`;
-							originalFunc.apply(thisArg, modifiedArgs);
-							const attrResult = originalFunc.apply(thisArg, originalArgs); // Restore
-							scheduleDomLogging(taskToLog);
+							const attrResult = originalFunc.apply(thisArg, modifiedArgs);
+							scheduleDomLogging(() => {
+								taskToLog();
+								originalFunc.apply(thisArg, originalArgs); // Restore
+							});
 							return attrResult;
 						}
 					}
@@ -832,7 +880,7 @@ const rewriter = function(CONFIG) {
 			real.warn(`[EV] Error during sink handling for '${name}':`, e);
 		}
 
-		// Default Behavior for all other sinks
+		// Default Behavior
 		const result = originalFunc.apply(thisArg, originalArgs);
 		scheduleDomLogging(taskToLog);
 		return result;
@@ -843,14 +891,24 @@ const rewriter = function(CONFIG) {
 			self.intr = intr;
 		}
 
-		// The proxy's job is simply to pass the call to our hook and return its result.
 		apply(target, thisArg, args) {
-			return EvalVillainHook(self.intr, this.evname, args, thisArg, target);
+			try {
+				// The hook is responsible for all logic, including calling the original.
+				return EvalVillainHook(self.intr, this.evname, args, thisArg, target);
+			} catch (e) {
+				real.warn('[EV] Hook failed unexpectedly. Calling original function directly.', e);
+				return Reflect.apply(target, thisArg, args);
+			}
 		}
 
 		construct(target, args, newArg) {
-			// For constructors, the hook must return the new object.
-			return EvalVillainHook(self.intr, this.evname, args, newArg, target);
+			try {
+				// The hook is responsible for all logic, including calling the original.
+				return EvalVillainHook(self.intr, this.evname, args, newArg, target);
+			} catch (e) {
+				real.warn('[EV] Hook failed unexpectedly. Calling original constructor directly.', e);
+				return Reflect.construct(target, args, newArg);
+			}
 		}
 	}
 
