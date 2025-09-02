@@ -364,31 +364,29 @@ const rewriter = function(CONFIG) {
 		let id = '';
 		const param = sObj.param;
 
-		const getGlobalMarker = () => window.EV_ACTIVE_MARKER;
-
 		switch (fifoName) {
 			case 'localStorage':
 				if (!param) break;
 				id = `ls:${param}`;
 				priority = 1;
-				encoder = (marker = getGlobalMarker()) => { if (marker) localStorage.setItem(param, marker); };
+				encoder = (marker = window.EV_ACTIVE_MARKER) => { if (marker) localStorage.setItem(param, marker); };
 				break;
 			case 'cookie':
 				if (!param) break;
 				id = `cookie:${param}`;
 				priority = 1;
-				encoder = (marker = getGlobalMarker()) => { if (marker) document.cookie = `${param}=${marker}`; };
+				encoder = (marker = window.EV_ACTIVE_MARKER) => { if (marker) document.cookie = `${param}=${marker}`; };
 				break;
 			case 'winname':
 				id = 'winname';
 				priority = 1;
-				encoder = (marker = getGlobalMarker()) => { if (marker) window.name = marker; };
+				encoder = (marker = window.EV_ACTIVE_MARKER) => { if (marker) window.name = marker; };
 				break;
 			case 'query':
 				if (!param) break;
 				id = `query:${param}`;
 				priority = 3;
-				encoder = (marker = getGlobalMarker()) => {
+				encoder = (marker = window.EV_ACTIVE_MARKER) => {
 					if (!marker) return;
 					const url = new URL(window.location.href);
 					url.searchParams.set(param, marker);
@@ -398,7 +396,7 @@ const rewriter = function(CONFIG) {
 			case 'fragment':
 				id = 'fragment';
 				priority = 3;
-				encoder = (marker = getGlobalMarker()) => { if (marker) window.location.hash = marker; };
+				encoder = (marker = window.EV_ACTIVE_MARKER) => { if (marker) window.location.hash = marker; };
 				break;
 			case 'path':
 				// Path manipulation is complex and risky, skipping for probe for now.
