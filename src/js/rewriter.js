@@ -1130,4 +1130,108 @@ const rewriter = function(CONFIG) {
 		document.location.origin,
 		CONFIG.formats.interesting.default
 	);
+
+	// [VF-PATCH:PassiveInputListener] START
+	function setupPassiveInputListener() {
+		const targetNode = document.body;
+		if (!targetNode) {
+			// In some environments (like when running in a worker), body may not be available.
+			return;
+		}
+
+		const observerConfig = { childList: true, subtree: true };
+		const SELECTORS = 'input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], textarea, [contenteditable="true"]';
+
+		// Function to add listeners to a given node and its shadow DOM
+		const addListenersToNode = (node) => {
+			if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+			// Find all target elements within the node itself
+			const elements = node.querySelectorAll(SELECTORS);
+			elements.forEach(el => attachListeners(el));
+
+			// If the node has a shadow root, search within it as well
+			if (node.shadowRoot) {
+				const shadowElements = node.shadowRoot.querySelectorAll(SELECTORS);
+				shadowElements.forEach(el => attachListeners(el));
+			}
+
+			// Also check all descendant nodes for shadow roots
+			const allDescendants = node.querySelectorAll('*');
+			allDescendants.forEach(descendant => {
+				if (descendant.shadowRoot) {
+					const shadowElements = descendant.shadowRoot.querySelectorAll(SELECTORS);
+					shadowElements.forEach(el => attachListeners(el));
+				}
+			});
+		};
+
+		// The MutationObserver callback
+		const mutationCallback = (mutationsList, _observer) => {
+			for (const mutation of mutationsList) {
+				if (mutation.type === 'childList') {
+					mutation.addedNodes.forEach(node => {
+						addListenersToNode(node);
+					});
+				}
+			}
+		};
+
+		const observer = new MutationObserver(mutationCallback);
+
+		// Initial run on the existing DOM
+		addListenersToNode(targetNode);
+
+		// Start observing the target node for configured mutations
+		observer.observe(targetNode, observerConfig);
+
+		const lastValueMap = new WeakMap();
+		const debounceMap = new WeakMap();
+
+		function attachListeners(element) {
+			element.addEventListener('input', eventHandler);
+			element.addEventListener('change', eventHandler);
+		}
+
+		function eventHandler(event) {
+			const element = event.target;
+			const value = element.isContentEditable ? element.textContent : element.value;
+
+			// Duplicate prevention
+			if (lastValueMap.get(element) === value) {
+				return;
+			}
+			lastValueMap.set(element, value);
+
+			// [VF-PATCH:PassiveInputDebounce] START
+			if (debounceMap.has(element)) {
+				clearTimeout(debounceMap.get(element));
+			}
+			const timeoutId = setTimeout(() => {
+				processValue(element, value);
+			}, 250);
+			debounceMap.set(element, timeoutId);
+			// [VF-PATCH:PassiveInputDebounce] END
+		}
+
+		function processValue(element, value) {
+			// [VF-PATCH:PassiveInputSizeLimit] START
+			const MAX_PASSIVE_INPUT_SIZE = 10000;
+			if (value.length > MAX_PASSIVE_INPUT_SIZE) {
+				return; // Skip oversized input
+			}
+			// [VF-PATCH:PassiveInputSizeLimit] END
+
+			const sObj = {
+				search: value,
+				timestamp: new Date().toISOString(),
+				origin: location.origin,
+				display: element.tagName.toLowerCase() + (element.id ? `#${element.id}` : '')
+			};
+
+			addToFifo(sObj, 'userSource');
+		}
+	}
+	setupPassiveInputListener();
+	// [VF-PATCH:PassiveInputListener] END
 }
