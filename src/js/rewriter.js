@@ -236,176 +236,109 @@ const rewriter = function(CONFIG) {
 		}
 	}
 
-	let rotateWarnAt = 8;
-
-	const CoreDecodeEngine = (() => {
-		const MAX_DEPTH = 10;
-
-		function* deepDecode(input) {
-			const seen = new Set();
-			yield* decodeAny(input, "initial", seen, 0);
+	// Start of transplanted decoder engine from original GitHub version
+	function _isNeedleBad(str, fifo, BLACKLIST) {
+		if (typeof(str) !== "string" || str.length == 0 || fifo.has(str)) {
+			return true;
 		}
+		return BLACKLIST.matchAny(str);
+	}
 
-		function* decodeAny(input, history, seen, depth) {
-			if (depth > MAX_DEPTH) return;
+	function* _decodeAll(s, fifo, BLACKLIST, decoded = "") {
+		if (_isNeedleBad(s, fifo, BLACKLIST)) {
+			return;
+		}
+		yield [s, decoded];
 
-			const seenKey = typeof input === 'object' && input !== null ? JSON.stringify(input) : String(input);
-			if (seen.has(seenKey)) return;
-			if (seenKey.length > 0) seen.add(seenKey);
-
-			if (typeof input === 'string') {
-				yield* decodeAll(input, history, seen, depth);
-			} else if (Array.isArray(input)) {
-				yield* decodeArray(input, history, seen, depth);
-			} else if (typeof input === 'object' && input !== null) {
-				yield* decodeObject(input, history, seen, depth);
+		try {
+			const dec = real.JSON.parse(s);
+			if (dec) {
+				const fwd = `\t{\n\t\tlet _ = ${s};\n\t\t_`;
+				yield* _decodeAny(dec, fifo, BLACKLIST, `\t\tx = JSON.stringify(_);\n\t}\n${decoded}`, fwd);
+				return;
 			}
-		}
+		} catch (_) {}
 
-		function* decodeArray(arr, history, seen, depth) {
-			for (let i = 0; i < arr.length; i++) {
-				yield* decodeAny(arr[i], `${history}[${i}]`, seen, depth + 1);
+		let url = null;
+		try {
+			url = new URL(s);
+			for (const [key, value] of getAllQueryParams(url.search)) {
+				const dec = `\t{\n` + `\t\tconst _ = new URL("${s.replaceAll('"', "%22")}");\n` + `\t\t_.searchParams.set('${key.replaceAll('"', '\x22')}', decodeURIComponent(x));\n` + `\t\tx = _.href;\n` + `\t}\n` + decoded;
+				yield* _decodeAll(value, fifo, BLACKLIST, dec);
 			}
-		}
-
-		function* decodeObject(obj, history, seen, depth) {
-			for (const key in obj) {
-				if (Object.hasOwnProperty.call(obj, key)) {
-					yield* decodeAny(obj[key], `${history}.${key}`, seen, depth + 1);
-				}
+			if (url.hash.length > 1) {
+				const dec = `\t{\n` + `\t\tconst _ = new URL("${s.replaceAll('"', "%22")}");\n` + `\t\t_.hash = x;\n` + `\t\tx = _.href;\n` + `\t}\n` + decoded;
+				yield* _decodeAll(url.hash.substring(1), fifo, BLACKLIST, dec);
 			}
-		}
+		} catch (err) {}
 
-		function* decodeAll(str, history, seen, depth) {
-			if (typeof str !== 'string' || str.length === 0) return;
-
-			const decoders = [
-				urlDecode, htmlEntityDecode, jsUnicodeEscapeDecode, base64Decode,
-				hexDecode, charCodeDecode, jsonParse, parseMultipart, octetStreamDecode
-			];
-
-			for (const decoder of decoders) {
-				try {
-					for (const [decoded, type] of decoder(str)) {
-						if (decoded === str) continue;
-						const newHistory = history === "initial" ? type : `${history}->${type}`;
-						yield [decoded, newHistory];
-						yield* decodeAny(decoded, newHistory, seen, depth + 1);
-					}
-				} catch (e) {}
+		try {
+			const dec = real.atob.call(window, s);
+			if (dec) {
+				yield* _decodeAll(dec, fifo, BLACKLIST, `\tx = btoa(x);\n${decoded}`);
+				return;
 			}
+		} catch (_) {}
+
+		const decReplace = s.replaceAll("+", " ");
+		if (decReplace !== s) {
+			yield* _decodeAll(decReplace, fifo, BLACKLIST, `\tx = x.replaceAll("+", " ");\n${decoded}`);
 		}
 
-		function* urlDecode(str) {
-			if (!str.includes('%')) return;
-			let current = str;
-			for (let i = 0; i < 10; i++) {
-				try {
-					const decoded = decodeURIComponent(current);
-					if (decoded !== current) {
-						yield [decoded, `urlDecode(${i+1})`];
-						current = decoded;
-					} else break;
-				} catch (e) { break; }
+		if (!s.includes("%")) {
+			return;
+		}
+
+		try {
+			const decComp = real.decodeURIComponent(s);
+			if (decComp && decComp != s) {
+				yield* _decodeAll(decComp, fifo, BLACKLIST, `\tx = encodeURIComponent(x);\n${decoded}`);
 			}
-		}
+		} catch (_) {}
 
-		function* htmlEntityDecode(str) {
-			if (!str.includes('&') || !/&[a-zA-Z0-9#]{1,10};/.test(str)) return;
-			if (typeof document === 'undefined') return;
-			try {
-				const textarea = document.createElement('textarea');
-				textarea.innerHTML = str;
-				const decoded = textarea.value;
-				if (decoded !== str) yield [decoded, 'htmlEntity'];
-			} catch (e) {}
-		}
-
-		function* jsUnicodeEscapeDecode(str) {
-			if (!str.includes('\\')) return;
-			try {
-				const decoded = str.replace(/\\u([a-fA-F0-9]{4})|\\x([a-fA-F0-9]{2})/g, (_, p1, p2) =>
-					String.fromCharCode(parseInt(p1 || p2, 16))
-				);
-				if (decoded !== str) yield [decoded, 'jsUnescape'];
-			} catch (e) {}
-		}
-
-		function* base64Decode(str) {
-			if (str.length < 4 || str.length % 4 !== 0 || !/^[A-Za-z0-9+/=\s_-]+$/.test(str)) return;
-			const standard = str.replace(/[-_]/g, m => m === '-' ? '+' : '/');
-			try {
-				const decoded = atob(standard);
-				if (decoded) yield [decoded, 'base64'];
-			} catch (e) {}
-		}
-
-		function* hexDecode(str) {
-			if (str.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(str)) return;
-			try {
-				let decoded = '';
-				for (let i = 0; i < str.length; i += 2) {
-					decoded += String.fromCharCode(parseInt(str.substr(i, 2), 16));
-				}
-				if (decoded) yield [decoded, 'hex'];
-			} catch (e) {}
-		}
-
-		function* charCodeDecode(str) {
-			if (!/^\s*\d+(\s*,\s*\d+)*\s*$/.test(str)) return;
-			try {
-				const decoded = String.fromCharCode.apply(null, str.trim().split(',').map(Number));
-				if (decoded) yield [decoded, 'fromCharCode'];
-			} catch (e) {}
-		}
-
-		function* jsonParse(str) {
-			const trimmed = str.trim();
-			if ((!trimmed.startsWith('{') || !trimmed.endsWith('}')) && (!trimmed.startsWith('[') || !trimmed.endsWith(']'))) return;
-			try {
-				const parsed = JSON.parse(trimmed);
-				const newSeen = new Set();
-				yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
-			} catch (e) {}
-		}
-
-		function* parseMultipart(str) {
-			if (!str.includes('Content-Disposition')) return;
-			const boundaryMatch = str.match(/^--([^\r\n]+)/);
-			if (!boundaryMatch) return;
-			const boundary = boundaryMatch[1];
-			const parts = str.split(new RegExp(`--${boundary}(--)?`));
-			for (const part of parts) {
-				const trimmedPart = part.trim();
-				if (trimmedPart === '') continue;
-				const headerMatch = trimmedPart.match(/Content-Disposition:[^\r\n]*; name="([^"]+)"/);
-				if (!headerMatch) continue;
-				const name = headerMatch[1];
-				const contentSplit = trimmedPart.split('\r\n\r\n');
-				if (contentSplit.length > 1) {
-					const content = contentSplit.slice(1).join('\r\n\r\n');
-					yield [content, `multipart(${name})`];
-				}
+		try {
+			const decUri = real.decodeURI(s);
+			if (decUri && decUri != s) {
+				yield* _decodeAll(decUri, fifo, BLACKLIST, `\tx = encodeURIComponent(x);\n${decoded}`);
 			}
-		}
+		} catch (_) {}
+	}
 
-		function* octetStreamDecode(str) {
-			if (str.includes('%')) {
-				try {
-					const decoded = decodeURIComponent(str);
-					if (decoded !== str) yield [decoded, 'octetStream(utf8)'];
-				} catch (e) {}
-			}
-			if (/[^\x20-\x7E\t\r\n]/.test(str)) {
-				yield [str, 'octetStream(binary)'];
-			}
+	function* _decodeAny(any, fifo, BLACKLIST, decoded, fwd) {
+		if (Array.isArray(any)) {
+			yield* _decodeArray(any, fifo, BLACKLIST, decoded, fwd);
+		} else if (typeof(any) == "object" && any !== null) {
+			yield* _decodeObject(any, fifo, BLACKLIST, decoded, fwd);
+		} else {
+			yield* _decodeAll(any, fifo, BLACKLIST, fwd + "= x;\n" + decoded);
 		}
+	}
 
-		return { deepDecode };
-	})();
+	function* _decodeArray(a, fifo, BLACKLIST, decoded, fwd) {
+		for (const i in a) {
+			yield* _decodeAny(a[i], fifo, BLACKLIST, decoded, fwd + `[${i}]`);
+		}
+	}
+
+	function* _decodeObject(o, fifo, BLACKLIST, decoded, fwd) {
+		for (const prop in o) {
+			yield* _decodeAny(o[prop], fifo, BLACKLIST, decoded, fwd + `[${JSON.stringify(prop)}]`);
+		}
+	}
+
+	function* deepDecode(s, fifo, BLACKLIST) {
+		if (typeof(s) === 'string') {
+			yield* _decodeAll(s, fifo, BLACKLIST);
+		} else if (typeof(s) === "object" && s !== null) {
+			const fwd = `\t{\n\t\tlet _ = ${JSON.stringify(s)};\n\t\t_`;
+			yield* _decodeAny(s, fifo, BLACKLIST, `\t\tx = _\n\t}\n`, fwd);
+		}
+	}
+	// End of transplanted decoder engine
 
 	const MAX_INPUT_SIZE = 10000;
 
+	let rotateWarnAt = 8;
 	function addToFifo(sObj, fifoName) {
 		if (typeof sObj.search === 'string' && sObj.search.length > MAX_INPUT_SIZE) {
 			return;
@@ -416,14 +349,7 @@ const rewriter = function(CONFIG) {
 			throw `No ${fifoName}`;
 		}
 
-		if (!BLACKLIST.matchAny(sObj.search) && !fifo.has(sObj.search)) {
-			fifo.nq({...sObj, decode: "initial"});
-		}
-
-		for (const [search, decode] of CoreDecodeEngine.deepDecode(sObj.search)) {
-			if (BLACKLIST.matchAny(search) || fifo.has(search)) {
-				continue;
-			}
+		for (const [search, decode] of deepDecode(sObj.search, fifo, BLACKLIST)) {
 			const throwaway = fifo.nq({...sObj, search: search, decode: decode});
 
 			if (throwaway % rotateWarnAt == 1) {
