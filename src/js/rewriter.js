@@ -152,6 +152,16 @@ const rewriter = function(CONFIG) {
 			}
 			return false;
 		}
+
+		// Load persisted user sources
+		if (putInUse("userSource")) {
+			try {
+				const sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
+				sources.forEach(sObj => addToFifo(sObj, "userSource"));
+			} catch (e) {
+				real.warn('[EV] Failed to load user sources from localStorage.', e);
+			}
+		}
 	}
 
 	/** Everything that might make a particular sink interesting */
@@ -1131,6 +1141,23 @@ const rewriter = function(CONFIG) {
 		CONFIG.formats.interesting.default
 	);
 
+	const USER_SOURCE_KEY = 'eval_villain_user_sources';
+	const MAX_USER_SOURCES = 50;
+
+	function saveUserSource(sObj) {
+		try {
+			let sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
+			if (sources.some(s => s.search === sObj.search)) return;
+			sources.unshift(sObj);
+			if (sources.length > MAX_USER_SOURCES) {
+				sources = sources.slice(0, MAX_USER_SOURCES);
+			}
+			real.localStorage.setItem(USER_SOURCE_KEY, JSON.stringify(sources));
+		} catch (e) {
+			real.warn('[EV] Failed to save user source to localStorage.', e);
+		}
+	}
+
 	// [VF-PATCH:PassiveInputListener] START
 	function setupPassiveInputListener() {
 		real.log('[EV-DEBUG] setupPassiveInputListener function called.');
@@ -1176,7 +1203,6 @@ const rewriter = function(CONFIG) {
 
 			function attachListeners(element) {
 				if (element.dataset.evListenersAttached) return;
-				real.log(`[EV-DEBUG] Attaching listeners to:`, element);
 				element.addEventListener('input', eventHandler);
 				element.addEventListener('change', eventHandler);
 				element.addEventListener('keyup', eventHandler);
@@ -1184,31 +1210,26 @@ const rewriter = function(CONFIG) {
 			}
 
 			function eventHandler(event) {
-				real.log(`[EV-DEBUG] Event triggered: ${event.type}`, event.target);
 				const element = event.target;
-				const value = element.isContentEditable ? element.textContent : element.value;
-
-				if (lastValueMap.get(element) === value) {
-					real.log(`[EV-DEBUG] Duplicate value skipped: "${value}"`);
-					return;
-				}
-				lastValueMap.set(element, value);
-
 				if (debounceMap.has(element)) {
 					clearTimeout(debounceMap.get(element));
 				}
-				real.log(`[EV-DEBUG] Setting debounce timer for value: "${value}"`);
 				const timeoutId = setTimeout(() => {
-					processValue(element, value);
+					processValue(element);
 				}, 250);
 				debounceMap.set(element, timeoutId);
 			}
 
-			function processValue(element, value) {
-				real.log(`[EV-DEBUG] Processing value: "${value}"`, element);
+			function processValue(element) {
+				const value = element.isContentEditable ? element.textContent : element.value;
+
+				if (lastValueMap.get(element) === value) {
+					return;
+				}
+				lastValueMap.set(element, value);
+
 				const MAX_PASSIVE_INPUT_SIZE = 10000;
 				if (value.length > MAX_PASSIVE_INPUT_SIZE) {
-					real.log(`[EV-DEBUG] Value skipped due to size limit.`);
 					return;
 				}
 
@@ -1219,8 +1240,8 @@ const rewriter = function(CONFIG) {
 					display: element.tagName.toLowerCase() + (element.id ? `#${element.id}` : '')
 				};
 
-				real.log(`[EV-DEBUG] Calling addToFifo with:`, sObj);
 				addToFifo(sObj, 'userSource');
+				saveUserSource(sObj);
 			}
 		};
 
