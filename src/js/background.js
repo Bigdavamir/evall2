@@ -518,7 +518,13 @@ function handleMessage(request, _sender, _sendResponse) {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
 		const probeCode = `
-			(function runOptimizedProbe(marker) {
+			(function runOptimizedProbe() {
+				// Ensure a global marker exists, even if no sink has been triggered yet.
+				if (!window.EV_ACTIVE_MARKER) {
+					window.EV_ACTIVE_MARKER = \`EV_SAFE_PROBE_${Date.now()}_${Math.random().toString(36).substr(2,9)}\`;
+				}
+				const marker = window.EV_ACTIVE_MARKER;
+
 				const BATCH_SIZE = 15;
 				const BATCH_DELAY = 50;
 
@@ -555,10 +561,10 @@ function handleMessage(request, _sender, _sendResponse) {
 					for (const src of batch) {
 						try {
 							if (typeof src.encoder === 'function') {
-								// Backward-compatible check for encoder arity
+								// Check arity to support old encoders that expect a marker argument.
 								src.encoder.length > 0
-									? src.encoder(window.EV_ACTIVE_MARKER || marker) // Pass global marker if available
-									: src.encoder(); // Call new-style encoder
+									? src.encoder(marker)
+									: src.encoder();
 							}
 						} catch (e) {
 							console.warn("Probe encode failed for source:", src, e);
@@ -571,7 +577,7 @@ function handleMessage(request, _sender, _sendResponse) {
 
 				schedule(processNextBatch);
 
-			})("AMIR");
+			})();
 		`;
 
 		browser.tabs.executeScript({
