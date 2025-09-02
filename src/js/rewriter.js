@@ -285,6 +285,7 @@ const rewriter = function(CONFIG) {
 		// --- Specific Decoding Functions ---
 
 		function* urlDecode(str) {
+			if (!str.includes('%')) return;
 			let current = str;
 			for (let i = 0; i < 10; i++) { // Limit nesting
 				try {
@@ -302,6 +303,7 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* htmlEntityDecode(str) {
+			if (!str.includes('&')) return;
 			// This is a browser-only implementation.
 			if (typeof document === 'undefined') return;
 			try {
@@ -315,6 +317,7 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* jsUnicodeEscapeDecode(str) {
+			if (!str.includes('\\')) return;
 			// decodes \uXXXX and \xXX
 			try {
 				const decoded = str.replace(/\\u([a-fA-F0-9]{4})|\\x([a-fA-F0-9]{2})/g, (_, p1, p2) =>
@@ -372,6 +375,7 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* parseMultipart(str) {
+			if (!str.includes('Content-Disposition')) return;
 			const boundaryMatch = str.match(/^--([^\r\n]+)/);
 			if (!boundaryMatch) return;
 			const boundary = boundaryMatch[1];
@@ -509,8 +513,14 @@ const rewriter = function(CONFIG) {
 	*/
 	// [VF-PATCH:CoreDecodeEngine] END
 
+	const MAX_INPUT_SIZE = 10240; // 10 KB
+
 	// set of strings to search for
 	function addToFifo(sObj, fifoName) { // TODO: add blacklist arg
+		if (typeof sObj.search === 'string' && sObj.search.length > MAX_INPUT_SIZE) {
+			sObj.search = sObj.search.substring(0, MAX_INPUT_SIZE); // Truncate
+		}
+
 		const fifo = ALLSOURCES[fifoName];
 		if (!fifo) {
 			throw `No ${fifoName}`;
