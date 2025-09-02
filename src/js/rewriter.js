@@ -1,4 +1,4 @@
-/* Eval Villain just jams this rewriter function into the loading page, withaa
+/* Eval Villain just jams this rewriter function into the loading page, withaadfgdfg
  * some JSON as CONFIG. Normally Firefox does this for you from the
  * background.js file. But you could always copy paste this code anywhere you
  * want. Such as into a proxie'd response or electron instramentation.
