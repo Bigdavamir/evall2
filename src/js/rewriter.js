@@ -390,13 +390,16 @@ const rewriter = function(CONFIG) {
 					if (!marker) return;
 					const url = new URL(window.location.href);
 					url.searchParams.set(param, marker);
-					window.location.href = url.href;
+					history.replaceState(null, '', url.href);
 				};
 				break;
 			case 'fragment':
 				id = 'fragment';
 				priority = 3;
-				encoder = (marker = window.EV_ACTIVE_MARKER) => { if (marker) window.location.hash = marker; };
+				encoder = (marker = window.EV_ACTIVE_MARKER) => {
+					if (!marker) return;
+					history.replaceState(null, '', '#' + marker);
+				};
 				break;
 			case 'path':
 				// Path manipulation is complex and risky, skipping for probe for now.

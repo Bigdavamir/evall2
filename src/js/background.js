@@ -523,7 +523,9 @@ function handleMessage(request, _sender, _sendResponse) {
 		// It sets the global marker and then calls the encoders.
 		const probeCode = `
 			(function runStressProbe(marker) {
-				window.EV_ACTIVE_MARKER = marker;
+				if (!window.EV_ACTIVE_MARKER) {
+					window.EV_ACTIVE_MARKER = marker;
+				}
 				const sources = window.EV_FOUND_SOURCES || [];
 				if (sources.length === 0) { return; }
 
