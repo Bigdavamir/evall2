@@ -723,7 +723,6 @@ const rewriter = function(CONFIG) {
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
 		// --- Fallback for non-function originalFunc ---
 		if (typeof originalFunc !== 'function') {
-			console.warn("[EV] No original function found for sink:", name);
 			const argObj = getArgs(args);
 			if (argObj.args.length > 0) {
 				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
@@ -736,16 +735,27 @@ const rewriter = function(CONFIG) {
 		const modifiedArgs = [...args];
 
 		// --- Context-Aware Marker Injection Logic ---
-		let injectionType = 'none';
-
 		switch (name) {
 			case 'eval':
 			case 'Function':
 			case 'setTimeout':
 			case 'setInterval':
 				if (typeof modifiedArgs[0] === 'string') {
-					modifiedArgs[0] = `${originalArgs[0]}\n/*${markerId}*/`;
-					injectionType = 'js_comment';
+					// Inject marker safely as a string literal at the end of the code
+					modifiedArgs[0] = `${originalArgs[0]}; ${JSON.stringify(markerId)};`;
+					try {
+						originalFunc.apply(thisArg, modifiedArgs);
+					} catch (e) {
+						console.warn(`[EV] Marker injection failed for sink: ${name}`, e);
+					}
+					// Unconditionally log after execution attempt
+					queueMicrotask(() => {
+						const argObj = getArgs(originalArgs);
+						if (argObj.args.length > 0) {
+							finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj });
+						}
+					});
+					return true; // We handled the call
 				}
 				break;
 
