@@ -6,44 +6,6 @@
 const rewriter = function(CONFIG) {
   if (!window.EV_FOUND_SOURCES) window.EV_FOUND_SOURCES = [];
 
-  // Robust hook for innerHTML and outerHTML to ensure we catch all sets,
-  // even if other scripts have already hooked them.
-  function applyRobustHook(propName) {
-    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, propName);
-
-    // If there's no descriptor or no setter, we can't hook it.
-    if (!descriptor || typeof descriptor.set !== 'function') {
-      return;
-    }
-
-    // Avoid re-hooking if we've already applied our hook.
-    if (descriptor.set._isEvalVillainHook) {
-      return;
-    }
-
-    const originalSetter = descriptor.set;
-
-    const newSetter = function(value) {
-      // Call the main EvalVillain hook to process the sink.
-      EvalVillainHook(INTRBUNDLE, `set(Element.${propName})`, [value]);
-
-      // Chain the call to the original setter.
-      return originalSetter.call(this, value);
-    };
-
-    // Flag our new setter to prevent re-hooking.
-    newSetter._isEvalVillainHook = true;
-
-    Object.defineProperty(Element.prototype, propName, {
-      configurable: true, // Keep it configurable.
-      enumerable: descriptor.enumerable,
-      get: descriptor.get,
-      set: newSetter
-    });
-  }
-
-  applyRobustHook('innerHTML');
-  applyRobustHook('outerHTML');
 
 	// Filter out known unsupported navigation sinks to avoid warnings.
 	// This is a secondary check; the primary filter is in background.js.
@@ -721,19 +683,48 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
-		// --- Fallback for non-function originalFunc ---
+		// If there's no original function, we can't proceed with hooking.
+		// Log the call attempt and return from the hook.
 		if (typeof originalFunc !== 'function') {
+			real.warn("[EV] No original function found for sink:", name);
 			const argObj = getArgs(args);
 			if (argObj.args.length > 0) {
 				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
 			}
-			return false; // Let proxy handle it
+			// We cannot proceed, so we let the original call happen via the proxy.
+			// This might fail if originalFunc is not a function, which is expected.
+			return Reflect.apply(originalFunc, thisArg, args);
 		}
 
-		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
+		// Prepare arguments for logging. We do this early to capture the original state.
+		const logCandidate = {
+			intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args)
+		};
+
+		// This function will be queued to run after the current macrotask.
+		const taskToLog = () => finalizeLog(logCandidate);
+
+		// Generate a unique marker for injection.
+		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 9)}__`;
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
+		try {
+			switch (name) {
+				// Execution Sinks: eval, Function, setTimeout, setInterval
+				case 'eval':
+				case 'Function':
+				case 'setTimeout':
+				case 'setInterval':
+					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
+						// Append the marker as a harmless string literal.
+						modifiedArgs[0] = originalArgs[0] + '; ' + JSON.stringify(markerId);
+						const result = originalFunc.apply(thisArg, modifiedArgs);
+						queueMicrotask(taskToLog);
+						return result;
+					}
+					// If not a string, fall through to default behavior.
+					break;
 		// --- Context-Aware Marker Injection Logic ---
 		switch (name) {
 			case 'eval':
@@ -767,51 +758,53 @@ const rewriter = function(CONFIG) {
 				}
 				break;
 
-			case 'value(Element.setAttribute)':
-				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce', 'viewBox', 'preserveAspectRatio'];
-				const attrName = originalArgs[0];
-				if (SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
-					// Use side-attribute injection for sensitive attributes
-					try {
-						originalFunc.apply(thisArg, [`data-ev-marker`, markerId]);
-						originalFunc.apply(thisArg, originalArgs); // Restore
+				// HTML Sinks: innerHTML, outerHTML
+				case 'set(Element.innerHTML)':
+				case 'set(Element.outerHTML)':
+					const result = originalFunc.apply(thisArg, originalArgs);
+					queueMicrotask(taskToLog);
+					return result;
+
+				// Attribute Sink: setAttribute
+				case 'value(Element.setAttribute)':
+					const attrName = originalArgs[0]?.toLowerCase();
+					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
+
+					if (SENSITIVE_ATTRS.includes(attrName)) {
+						// "Safe Injection": Use a temporary side-attribute.
+						const markerAttrName = `data-ev-marker-${attrName}`;
+						originalFunc.apply(thisArg, [markerAttrName, markerId]);
+						const attrResult = originalFunc.apply(thisArg, originalArgs);
 						queueMicrotask(() => {
-							if (thisArg && thisArg.hasAttribute('data-ev-marker')) {
-								finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj: getArgs(originalArgs) });
-								thisArg.removeAttribute('data-ev-marker');
+							taskToLog();
+							if (thisArg && typeof thisArg.removeAttribute === 'function') {
+								thisArg.removeAttribute(markerAttrName);
 							}
 						});
-						return true; // Handled
-					} catch (e) {
-						console.warn(`[EV] Safe marker injection failed for ${attrName}`, e);
-					}
-				} else {
-					// Use ephemeral injection for non-sensitive attributes
-					if (typeof modifiedArgs[1] === 'string') {
-						modifiedArgs[1] += markerId;
-						try {
-							originalFunc.apply(thisArg, modifiedArgs);
-							originalFunc.apply(thisArg, originalArgs); // Restore
-							queueMicrotask(() => {
-								if (thisArg && thisArg.getAttribute(attrName)?.includes(markerId)) {
-									finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj: getArgs(originalArgs) });
-								}
-							});
-							return true; // Handled
-						} catch (e) {
-							console.warn(`[EV] Ephemeral injection failed for ${attrName}`, e);
+						return attrResult;
+					} else {
+						// "Ephemeral Injection": Briefly add a marker to the value.
+						if (typeof originalArgs[1] === 'string') {
+							modifiedArgs[1] = originalArgs[1] + markerId;
+							originalFunc.apply(thisArg, modifiedArgs); // Apply modified value.
+							const attrResult = originalFunc.apply(thisArg, originalArgs); // Immediately restore.
+							queueMicrotask(taskToLog);
+							return attrResult;
 						}
+						// If value is not a string, fall through to default.
 					}
-				}
-				break;
+					break;
+			}
+		} catch (e) {
+			real.warn(`[EV] Error during sink handling for '${name}':`, e);
+			// Fall through to default behavior even if our logic fails.
 		}
 
-		// --- Fallback to default logging for all other sinks ---
-		const argObj = getArgs(args);
-		if (argObj.args.length > 0) {
-			finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
-		}
-		return false; // Let the proxy call the original function.
+		// --- Default Behavior for all other sinks ---
+		// Call the original function and return its result, logging afterward.
+		const result = originalFunc.apply(thisArg, originalArgs);
+		queueMicrotask(taskToLog);
+		return result;
 	}
 
 	class evProxy {
@@ -819,20 +812,14 @@ const rewriter = function(CONFIG) {
 			self.intr = intr;
 		}
 
-		// Start of Eval Villain hook
-		apply(_target, _thisArg, args) {
-			const handled = EvalVillainHook(self.intr, this.evname, args, _thisArg, _target);
-			if (!handled) {
-				return Reflect.apply(...arguments);
-			}
+		// The proxy's job is simply to pass the call to our hook and return its result.
+		apply(target, thisArg, args) {
+			return EvalVillainHook(self.intr, this.evname, args, thisArg, target);
 		}
 
-		// Start of Eval Villain hook
-		construct(_target, args, _newArg) {
-			const handled = EvalVillainHook(self.intr, this.evname, args, _newArg, _target);
-			if (!handled) {
-				return Reflect.construct(...arguments);
-			}
+		construct(target, args, newArg) {
+			// For constructors, the hook must return the new object.
+			return EvalVillainHook(self.intr, this.evname, args, newArg, target);
 		}
 	}
 
