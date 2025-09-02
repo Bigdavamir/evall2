@@ -4,6 +4,21 @@
  * want. Such as into a proxie'd response or electron instramentation.
  */
 const rewriter = function(CONFIG) {
+	// Filter out known unsupported navigation sinks to avoid warnings.
+	// This is a secondary check; the primary filter is in background.js.
+	CONFIG.functions = CONFIG.functions.filter(evname => {
+		const NAV_SINKS = [
+			"set(Location.href)",
+			"value(Location.assign)",
+			"value(Location.replace)"
+		];
+		if (NAV_SINKS.includes(evname)) {
+			console.warn(`[EV] Skipping unsupported navigation sink: ${evname}`);
+			return false;
+		}
+		return true;
+	});
+
 	const USER_SOURCE_KEY = 'eval_villain_user_sources';
 	const MAX_USER_SOURCES = 50;
 
