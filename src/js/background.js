@@ -1,4 +1,4 @@
-// default config stuff
+// default config stuffdddddddddddd
 const defaultConfig = {
 	"functions" : [
 		{
