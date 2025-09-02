@@ -152,16 +152,6 @@ const rewriter = function(CONFIG) {
 			}
 			return false;
 		}
-
-		// Load persisted user sources
-		if (putInUse("userSource")) {
-			try {
-				const sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
-				sources.forEach(sObj => addToFifo(sObj, "userSource"));
-			} catch (e) {
-				real.warn('[EV] Failed to load user sources from localStorage.', e);
-			}
-		}
 	}
 
 	/** Everything that might make a particular sink interesting */
@@ -1011,6 +1001,21 @@ const rewriter = function(CONFIG) {
 			return false;
 		}
 
+		// Load persisted user sources
+		if (putInUse("userSource")) {
+			try {
+				const sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
+				sources.forEach(sObj => {
+					// Ensure the source is not already in the fifo from other sources
+					if (!ALLSOURCES.userSource.has(sObj.search)) {
+						addToFifo(sObj, "userSource");
+					}
+				});
+			} catch (e) {
+				real.warn('[EV] Failed to load user sources from localStorage.', e);
+			}
+		}
+
 		// referer
 		let nm = "referrer";
 		if (putInUse(nm) && document.referrer) {
@@ -1160,13 +1165,9 @@ const rewriter = function(CONFIG) {
 
 	// [VF-PATCH:PassiveInputListener] START
 	function setupPassiveInputListener() {
-		real.log('[EV-DEBUG] setupPassiveInputListener function called.');
-
 		const startListener = () => {
-			real.log('[EV-DEBUG] DOM is ready, starting listener setup...');
 			const targetNode = document.body;
 			if (!targetNode) {
-				real.log('[EV-DEBUG] Catastrophic failure: document.body not found even after DOMContentLoaded.');
 				return;
 			}
 
@@ -1223,7 +1224,7 @@ const rewriter = function(CONFIG) {
 			function processValue(element) {
 				const value = element.isContentEditable ? element.textContent : element.value;
 
-				if (lastValueMap.get(element) === value) {
+				if (value.length === 0 || lastValueMap.get(element) === value) {
 					return;
 				}
 				lastValueMap.set(element, value);
@@ -1246,10 +1247,8 @@ const rewriter = function(CONFIG) {
 		};
 
 		if (document.readyState === 'loading') {
-			real.log('[EV-DEBUG] DOM not ready, waiting for DOMContentLoaded.');
 			document.addEventListener('DOMContentLoaded', startListener);
 		} else {
-			real.log('[EV-DEBUG] DOM already ready, starting listener setup immediately.');
 			startListener();
 		}
 	}
