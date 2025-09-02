@@ -518,9 +518,9 @@ function handleMessage(request, _sender, _sendResponse) {
 		return getConfigForRegister();
 	} else if (request.type === "stress-probe") {
 		const probeCode = `
-			(async function runOptimizedProbe(marker) {
+			(function runOptimizedProbe(marker) {
 				const BATCH_SIZE = 15;
-				const BATCH_DELAY = 50; // ms, fallback for setTimeout
+				const BATCH_DELAY = 50;
 
 				function schedule(callback) {
 					if (window.requestIdleCallback) {
@@ -536,22 +536,21 @@ function handleMessage(request, _sender, _sendResponse) {
 					return;
 				}
 
-				// 1. De-duplicate sources based on the unique ID
 				const uniqueSources = Array.from(new Map(sources.map(s => [s.id, s])).values());
-
-				// 2. Sort by priority (lower number = higher priority)
 				uniqueSources.sort((a, b) => a.priority - b.priority);
 
 				console.log(\`[EV] Running probe with marker: \${marker} on \${uniqueSources.length} unique sources (out of \${sources.length} total).\`);
 
-				let i = 0;
+				let currentIndex = 0;
 				function processNextBatch() {
-					const batch = uniqueSources.slice(i, i + BATCH_SIZE);
-					if (batch.length === 0) {
+					if (currentIndex >= uniqueSources.length) {
 						console.log("[EV] Probe batches complete. Reloading page...");
 						setTimeout(() => location.reload(), 100);
 						return;
 					}
+
+					console.log(\`[EV DEBUG] Processing batch: item \${currentIndex} of \${uniqueSources.length}\`);
+					const batch = uniqueSources.slice(currentIndex, currentIndex + BATCH_SIZE);
 
 					for (const src of batch) {
 						try {
@@ -563,7 +562,7 @@ function handleMessage(request, _sender, _sendResponse) {
 						}
 					}
 
-					i += BATCH_SIZE;
+					currentIndex += BATCH_SIZE;
 					schedule(processNextBatch);
 				}
 
