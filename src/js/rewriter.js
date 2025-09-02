@@ -853,13 +853,16 @@ const rewriter = function(CONFIG) {
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
-						// Safe Injection for sensitive attributes
+						// Safe Injection: add a data-* attribute and a comment node for visibility.
 						const markerAttrName = `data-ev-marker-${attrName}`;
+						const comment = document.createComment(markerId);
 						thisArg.setAttribute(markerAttrName, markerId);
+						thisArg.appendChild(comment);
 						const attrResult = originalFunc.apply(thisArg, originalArgs);
 						scheduleDomLogging(() => {
 							taskToLog();
 							thisArg.removeAttribute(markerAttrName);
+							comment.remove();
 						});
 						return attrResult;
 					} else {
