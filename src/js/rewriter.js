@@ -731,56 +731,83 @@ const rewriter = function(CONFIG) {
 			}
 			const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 8)}__`;
 			const originalArgs = [...args];
-			let taintedArgIndex = -1;
 
-			const SENSITIVE_SINKS = ['value(Element.setAttribute)'];
-			const isSensitive = SENSITIVE_SINKS.includes(name);
+			if (name === 'value(Element.setAttribute)') {
+				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce'];
+				const attrName = originalArgs[0];
 
-			if (isSensitive) {
-				// Ephemeral injection for sensitive sinks
-				const clonedArgs = [...args];
-				clonedArgs[1] += markerId; // Taint the value in the clone
-				try {
-					originalFunc.apply(thisArg, clonedArgs); // Execute with tainted clone for verification
-					originalFunc.apply(thisArg, originalArgs); // Immediately restore state with original args
-				} catch (e) {
-					console.warn("[EV] Ephemeral injection call failed for sink:", name, e);
-					return false; // Fallback to default logger
+				if (SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
+					// Safe injection for format-sensitive attributes
+					try {
+						originalFunc.apply(thisArg, [`data-ev-marker`, markerId]); // Set marker on a side-attribute
+						originalFunc.apply(thisArg, originalArgs); // Set the real attribute with the clean value
+					} catch (e) {
+						console.warn("[EV] Safe marker injection call failed for sink:", name, e);
+						return false;
+					}
+				} else {
+					// Ephemeral injection for other attributes
+					const clonedArgs = [...args];
+					if (typeof clonedArgs[1] === 'string') {
+						clonedArgs[1] += markerId;
+					}
+					try {
+						originalFunc.apply(thisArg, clonedArgs);
+						originalFunc.apply(thisArg, originalArgs);
+					} catch (e) {
+						console.warn("[EV] Ephemeral injection call failed for sink:", name, e);
+						return false;
+					}
 				}
 			} else {
 				// Direct injection for safe sinks (innerHTML, outerHTML)
-				args[0] += markerId;
+				if (typeof args[0] === 'string') {
+					args[0] += markerId;
+				}
 				try {
 					originalFunc.apply(thisArg, args);
 				} catch (e) {
 					console.warn("[EV] Original sink call failed during verification attempt.", e);
-					return false; // Fallback to default logger
+					return false;
 				}
 			}
 
 			queueMicrotask(() => {
 				let verified = false;
+				const SENSITIVE_ATTRS = ['width', 'height', 'maxlength', 'size', 'rows', 'cols', 'integrity', 'nonce'];
+				const attrName = originalArgs[0];
+
 				try {
-					switch (name) {
-						case 'value(Element.setAttribute)':
-							if (thisArg && typeof thisArg.getAttribute === 'function' && thisArg.getAttribute(originalArgs[0])?.includes(markerId)) {
-								verified = true;
-							}
-							break;
-						case 'set(Element.innerHTML)':
-							if (thisArg && thisArg.innerHTML.includes(markerId)) {
-								verified = true;
-							}
-							break;
-						case 'set(Element.outerHTML)':
-							// After outerHTML, the original element reference is gone. Check the parent.
-							if (thisArg && thisArg.parentElement && thisArg.parentElement.innerHTML.includes(markerId)) {
-								verified = true;
-							}
-							break;
+					if (name === 'value(Element.setAttribute)' && SENSITIVE_ATTRS.includes(attrName.toLowerCase())) {
+						// Verification and cleanup for sensitive attributes
+						if (thisArg && thisArg.hasAttribute('data-ev-marker') && thisArg.getAttribute('data-ev-marker') === markerId) {
+							verified = true;
+						}
+						if (thisArg && thisArg.hasAttribute('data-ev-marker')) {
+							thisArg.removeAttribute('data-ev-marker');
+						}
+					} else {
+						// Standard verification for other sinks
+						switch (name) {
+							case 'value(Element.setAttribute)':
+								if (thisArg && typeof thisArg.getAttribute === 'function' && thisArg.getAttribute(attrName)?.includes(markerId)) {
+									verified = true;
+								}
+								break;
+							case 'set(Element.innerHTML)':
+								if (thisArg && thisArg.innerHTML.includes(markerId)) {
+									verified = true;
+								}
+								break;
+							case 'set(Element.outerHTML)':
+								if (thisArg && thisArg.parentElement && thisArg.parentElement.innerHTML.includes(markerId)) {
+									verified = true;
+								}
+								break;
+						}
 					}
 				} catch (e) {
-					// Fallback for safety, e.g., if element was removed from DOM.
+					// Fallback for safety
 					if (document.documentElement.innerHTML.includes(markerId)) {
 						verified = true;
 						console.warn("[EV] Verification fell back to document search for sink:", name);
