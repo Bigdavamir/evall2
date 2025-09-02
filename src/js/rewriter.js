@@ -196,13 +196,333 @@ const rewriter = function(CONFIG) {
 
 	let rotateWarnAt = 8;
 
+	// [VF-PATCH:CoreDecodeEngine] START
+	const CoreDecodeEngine = (() => {
+		const MAX_DEPTH = 10;
+
+		/**
+		 * Main entry point for decoding. Iteratively yields all possible decoded variants.
+		 * @param {*} input The initial data to decode (string, object, array).
+		 * @returns {Generator<[string, string]>} A generator yielding [decodedString, decodeDescription].
+		 */
+		function* deepDecode(input) {
+			const seen = new Set();
+			// The initial input itself isn't a "decoded" variant, so we start with decodeAny
+			yield* decodeAny(input, "initial", seen, 0);
+		}
+
+		/**
+		 * Dispatches to the correct decoder based on input type. Tracks seen values and depth.
+		 */
+		function* decodeAny(input, history, seen, depth) {
+			if (depth > MAX_DEPTH) return;
+
+			// Avoid processing the same primitive value or object reference in the same decoding chain
+			const seenKey = typeof input === 'object' && input !== null ? JSON.stringify(input) : String(input);
+			if (seen.has(seenKey)) return;
+			if (seenKey.length > 0) seen.add(seenKey);
+
+
+			if (typeof input === 'string') {
+				yield* decodeAll(input, history, seen, depth);
+			} else if (Array.isArray(input)) {
+				yield* decodeArray(input, history, seen, depth);
+			} else if (typeof input === 'object' && input !== null) {
+				yield* decodeObject(input, history, seen, depth);
+			}
+		}
+
+		function* decodeArray(arr, history, seen, depth) {
+			for (let i = 0; i < arr.length; i++) {
+				yield* decodeAny(arr[i], `${history}[${i}]`, seen, depth + 1);
+			}
+		}
+
+		function* decodeObject(obj, history, seen, depth) {
+			for (const key in obj) {
+				if (Object.hasOwnProperty.call(obj, key)) {
+					yield* decodeAny(obj[key], `${history}.${key}`, seen, depth + 1);
+				}
+			}
+		}
+
+		/**
+		 * Applies all available decoding functions to a string.
+		 */
+		function* decodeAll(str, history, seen, depth) {
+			if (typeof str !== 'string' || str.length === 0) return;
+
+			const decoders = [
+				urlDecode,
+				htmlEntityDecode,
+				jsUnicodeEscapeDecode,
+				base64Decode,
+				hexDecode,
+				charCodeDecode,
+				jsonParse,
+				parseMultipart,
+				octetStreamDecode,
+			];
+
+			for (const decoder of decoders) {
+				try {
+					for (const [decoded, type] of decoder(str)) {
+						if (decoded === str) continue;
+						const newHistory = history === "initial" ? type : `${history}->${type}`;
+
+						// Yield the decoded string variant
+						yield [decoded, newHistory];
+
+						// And recursively decode it
+						yield* decodeAny(decoded, newHistory, seen, depth + 1);
+					}
+				} catch (e) {
+					// Ignore decoding errors and continue with other decoders
+				}
+			}
+		}
+
+		// --- Specific Decoding Functions ---
+
+		function* urlDecode(str) {
+			let current = str;
+			for (let i = 0; i < 10; i++) { // Limit nesting
+				try {
+					const decoded = decodeURIComponent(current);
+					if (decoded !== current) {
+						yield [decoded, `urlDecode(${i+1})`];
+						current = decoded;
+					} else {
+						break;
+					}
+				} catch (e) {
+					break;
+				}
+			}
+		}
+
+		function* htmlEntityDecode(str) {
+			// This is a browser-only implementation.
+			if (typeof document === 'undefined') return;
+			try {
+				const textarea = document.createElement('textarea');
+				textarea.innerHTML = str;
+				const decoded = textarea.value;
+				if (decoded !== str) {
+					yield [decoded, 'htmlEntity'];
+				}
+			} catch (e) {}
+		}
+
+		function* jsUnicodeEscapeDecode(str) {
+			// decodes \uXXXX and \xXX
+			try {
+				const decoded = str.replace(/\\u([a-fA-F0-9]{4})|\\x([a-fA-F0-9]{2})/g, (_, p1, p2) =>
+					String.fromCharCode(parseInt(p1 || p2, 16))
+				);
+				if (decoded !== str) {
+					yield [decoded, 'jsUnescape'];
+				}
+			} catch (e) {}
+		}
+
+		function* base64Decode(str) {
+			// Only decode if it looks like Base64
+			if (!/^[a-zA-Z0-9+/=\s_-]+$/.test(str) || str.length % 4 !== 0) return;
+			const standard = str.replace(/[-_]/g, m => m === '-' ? '+' : '/');
+			try {
+				const decoded = atob(standard);
+				if (decoded) {
+					yield [decoded, 'base64'];
+				}
+			} catch (e) {}
+		}
+
+		function* hexDecode(str) {
+			if (/^(?:[0-9a-fA-F]{2})+$/.test(str) && str.length > 1) {
+				try {
+					let decoded = '';
+					for (let i = 0; i < str.length; i += 2) {
+						decoded += String.fromCharCode(parseInt(str.substr(i, 2), 16));
+					}
+					 if (decoded) yield [decoded, 'hex'];
+				} catch (e) {}
+			}
+		}
+
+		function* charCodeDecode(str) {
+			if (/^\d+(,\d+)+$/.test(str)) {
+				try {
+					const decoded = String.fromCharCode.apply(null, str.split(',').map(Number));
+					if (decoded) yield [decoded, 'fromCharCode'];
+				} catch (e) {}
+			}
+		}
+
+		function* jsonParse(str) {
+			if ((str.startsWith('{') && str.endsWith('}')) || (str.startsWith('[') && str.endsWith(']'))) {
+				try {
+					const parsed = JSON.parse(str);
+					// We don't yield the object itself, but rather kick off a new decoding from that point
+					const newSeen = new Set(); // Use a fresh 'seen' set for the sub-document
+					yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
+				} catch (e) {}
+			}
+		}
+
+		function* parseMultipart(str) {
+			const boundaryMatch = str.match(/^--([^\r\n]+)/);
+			if (!boundaryMatch) return;
+			const boundary = boundaryMatch[1];
+			const parts = str.split(new RegExp(`--${boundary}(--)?`));
+			for (const part of parts) {
+				const trimmedPart = part.trim();
+				if (trimmedPart === '') continue;
+
+				const headerMatch = trimmedPart.match(/Content-Disposition:[^\r\n]*; name="([^"]+)"/);
+				if (!headerMatch) continue;
+
+				const name = headerMatch[1];
+				const contentSplit = trimmedPart.split('\r\n\r\n');
+				if (contentSplit.length > 1) {
+					const content = contentSplit.slice(1).join('\r\n\r\n');
+					yield [content, `multipart(${name})`];
+				}
+			}
+		}
+
+		function* octetStreamDecode(str) {
+			// This is a heuristic. Real octet-stream is binary, but here we handle string representations.
+			// Attempt to decode as if it's a UTF-8 byte stream that has been URI-encoded.
+			try {
+				// A common pattern for binary data in strings is percent-encoding bytes.
+				if (str.includes('%')) {
+					 const decoded = decodeURIComponent(str);
+					 if (decoded !== str) yield [decoded, 'octetStream(utf8)'];
+				}
+			} catch (e) {
+				// A different heuristic: if it contains non-printable ASCII, treat as binary string.
+				if (/[^\x20-\x7E\t\r\n]/.test(str)) {
+					yield [str, 'octetStream(binary)'];
+				}
+			}
+		}
+
+		return { deepDecode };
+	})();
+
+	/*
+	[VF-PATCH:CoreDecodeEngine-Tests]
+	This is a small test suite to verify the functionality of the CoreDecodeEngine.
+	To run, you would execute this in a browser console on a page where the rewriter is active,
+	then call `runCoreDecodeTests()`.
+
+	function runCoreDecodeTests() {
+		const CDE = CoreDecodeEngine;
+		console.log("--- Running CoreDecodeEngine Tests ---");
+
+		const tests = [
+			{
+				name: "Nested URL Encoding",
+				input: "https%253A%252F%252Fexample.com%253Fq%253Dtest",
+				expected: ["https://example.com/?q=test"]
+			},
+			{
+				name: "HTML Entity Encoding",
+				input: "&lt;div&gt;Hello&lt;/div&gt;",
+				expected: ["<div>Hello</div>"]
+			},
+			{
+				name: "Base64 HTML Payload",
+				input: "PGRpdiBvbmNsaWNrPSJhbGVydCgnSGVsbG8nKSI+Q2xpY2sgbWUhPC9kaXY+",
+				expected: [`<div onclick="alert('Hello')">Click me!</div>`]
+			},
+			{
+				name: "Multipart Form Data",
+				input: `--boundary\r\nContent-Disposition: form-data; name="text"\r\n\r\nHello World\r\n--boundary\r\nContent-Disposition: form-data; name="json"\r\n\r\n{"a": "b"}\r\n--boundary--`,
+				expected: ["Hello World", '{"a": "b"}', "b"]
+			},
+			{
+				name: "Octet-stream (URL-encoded UTF8)",
+				input: "S%C3%A9bastien",
+				expected: ["Sébastien"],
+			},
+			{
+				name: "Nested JSON with encoded fields",
+				input: `{"user":{"name":"Sm9obiBEb2U=","profile":"%3Cscript%3Ealert(1)%3C%2Fscript%3E"}}`,
+				expected: ["John Doe", "<script>alert(1)</script>"]
+			},
+			{
+				name: "JS Unicode/Hex Escapes",
+				input: "\\u0048\\u0065\\u006c\\u006c\\u006f\\x20\\u0057\\u006f\\u0072\\u006c\\u0064",
+				expected: ["Hello World"]
+			},
+			{
+				name: "CharCode Array",
+				input: "72,101,108,108,111",
+				expected: ["Hello"]
+			},
+			{
+				name: "Complex Nested Case (b64->url->json)",
+				input: "JTVCJTIySGVsbG8lMjUyMFdvcmxkJTIyJTVE", // base64: '["Hello%20World"]'
+				expected: ["[\"Hello World\"]", "Hello World"]
+			}
+		];
+
+		let passed = 0, failed = 0;
+
+		tests.forEach(test => {
+			console.group(`Test: ${test.name}`);
+			const results = new Set();
+			try {
+				for (const [decoded, _] of CDE.deepDecode(test.input)) {
+					results.add(decoded);
+				}
+
+				let testPassed = true;
+				for (const exp of test.expected) {
+					if (!results.has(exp)) {
+						console.error(`FAIL: Expected to find "${exp}" but it was not decoded.`);
+						testPassed = false;
+					} else {
+						console.log(`PASS: Found expected value "${exp}"`);
+					}
+				}
+				if (testPassed) passed++; else failed++;
+			} catch (e) {
+				console.error(`FAIL: Test threw an error: ${e.message}`);
+				failed++;
+			}
+			console.groupEnd();
+		});
+
+		console.log(`--- Test Summary ---`);
+		console.log(`Passed: ${passed}, Failed: ${failed}`);
+		if (failed > 0) {
+			console.error("Some tests failed!");
+		} else {
+			console.log("%cAll tests passed!", "color: green; font-weight: bold;");
+		}
+		return failed === 0;
+	}
+	*/
+	// [VF-PATCH:CoreDecodeEngine] END
+
 	// set of strings to search for
 	function addToFifo(sObj, fifoName) { // TODO: add blacklist arg
 		const fifo = ALLSOURCES[fifoName];
 		if (!fifo) {
 			throw `No ${fifoName}`;
 		}
-		for (const [search, decode] of deepDecode(sObj.search)) {
+		// Yield the original value first
+		if (!BLACKLIST.matchAny(sObj.search) && !fifo.has(sObj.search)) {
+			fifo.nq({...sObj, search: sObj.search, decode: "initial"});
+		}
+
+		for (const [search, decode] of CoreDecodeEngine.deepDecode(sObj.search)) {
+			if (BLACKLIST.matchAny(search) || fifo.has(search)) {
+				continue;
+			}
 			const throwaway = fifo.nq({...sObj, search: search, decode: decode});
 
 			if (throwaway % rotateWarnAt == 1) {
@@ -212,147 +532,6 @@ const rewriter = function(CONFIG) {
 					intCol.highlight, intCol.default, intCol.highlight
 				);
 			}
-		}
-
-		function *deepDecode(s) {
-			// TODO: Sets...
-			if (typeof(s) === 'string') {
-				yield *decodeAll(s);
-			} else if (typeof(s) === "object") {
-				const fwd = `\t{\n\t\tlet _ = ${JSON.stringify(s)};\n\t\t_`;
-				yield *decodeAny(s, `\t\tx = _\n\t}\n`, fwd);
-			}
-		}
-
-		function isNeedleBad(str) {
-			if (typeof(str) !== "string" || str.length == 0 || fifo.has(str)) {
-				return true;
-			}
-			return BLACKLIST.matchAny(str);
-		}
-
-
-		function *decodeAny(any, decoded, fwd) {
-			if (Array.isArray(any)) {
-				yield *decodeArray(any, decoded, fwd);
-			} else if (typeof(any) == "object"){
-				yield *decodeObject(any, decoded, fwd);
-			} else {
-				yield *decodeAll(any, fwd + "= x;\n" + decoded);
-			}
-		}
-
-		function *decodeArray(a, decoded, fwd) {
-			for (const i in a) {
-				yield *decodeAny(a[i], decoded, fwd+`[${i}]`);
-			}
-		}
-
-		function* decodeObject(o, decoded, fwd) {
-			for (const prop in o) {
-				yield *decodeAny(o[prop], decoded, fwd+`[${JSON.stringify(prop)}]`);
-			}
-		}
-
-		/**
-		* Generate all possible decodings for string
-		* @s {string}	args array of arguments
-		* @decoded {string} string representing deocoding method
-		*
-		**/
-		function *decodeAll(s, decoded="") {
-			if (isNeedleBad (s)) {
-				return;
-			}
-			yield [s, decoded];
-
-			// JSON
-			try {
-				const dec = real.JSON.parse(s);
-				if (dec) {
-					const fwd = `\t{\n\t\tlet _ = ${s};\n\t\t_`;
-					yield *decodeAny(dec, `\t\tx = JSON.stringify(_);\n\t}\n${decoded}`, fwd);
-					return;
-				}
-			} catch (_) {/**/}
-
-			// URL decoder
-			let url = null;
-			try {
-				url = new URL(s); // need to call URL, if it's not a URL you hit catch
-				// This caused a lot of spam, so removing for now
-				// if (url.hostname != location.hostname) {
-				// 	const dec = ``
-				// 		+ `\t{\n`
-				// 		+ `\t\tconst _ = new URL("${s.replaceAll('"', "%22")}");\n`
-				// 		+ `\t\t_.hostname = x;\n`
-				// 		+ `\t\tx = _.href;\n`
-				// 		+ `\t}\n`
-				// 		+ decoded;
-				// 	yield *decodeAll(url.hostname, dec);
-				// }
-
-				// query string of URL
-				for (const [key, value] of getAllQueryParams(url.search)) {
-					const dec = ``
-						+ `\t{\n`
-						+ `\t\tconst _ = new URL("${s.replaceAll('"', "%22")}");\n`
-						+ `\t\t_.searchParams.set('${key.replaceAll('"', '\x22')}', decodeURIComponent(x));\n`
-						+ `\t\tx = _.href;\n`
-						+ `\t}\n`
-					+ decoded;
-					yield *decodeAll(value, dec);
-				}
-				if (url.hash.length > 1) {
-					const dec = ``
-						+ `\t{\n`
-						+ `\t\tconst _ = new URL("${s.replaceAll('"', "%22")}");\n`
-						+ `\t\t_.hash = x;\n`
-						+ `\t\tx = _.href;\n`
-						+ `\t}\n`
-					+ decoded;
-					yield *decodeAll(url.hash.substring(1), dec);
-				}
-			} catch (err) {
-				if (url) {
-					real.error("Got error during decoding: %s", JSON.stringify(err.name));
-				}
-			}
-
-			// atob
-			try {
-				const dec = real.atob.call(window, s);
-				if (dec) {
-					yield *decodeAll(dec, `\tx = btoa(x);\n${decoded}`);
-					return;
-				}
-			} catch (_) {/**/}
-
-			// string replace
-			const dec = s.replaceAll("+", " ");
-			if (dec !== s) {
-				yield *decodeAll(dec, `\tx = x.replaceAll("+", " ");\n${decoded}`);
-			}
-
-			if (!s.includes("%")) {
-				return;
-			}
-
-			// match all of them
-			try {
-				const dec = real.decodeURIComponent(s);
-				if (dec && dec != s) {
-					yield *decodeAll(dec, `\tx = encodeURIComponent(x);\n${decoded}`);
-				}
-			} catch(_){/**/}
-
-			// match all of them
-			try {
-				const dec = real.decodeURI(s);
-				if (dec && dec != s) {
-					yield *decodeAll(dec, `\tx = encodeURIComponent(x);\n${decoded}`);
-				}
-			} catch(_){/**/}
 		}
 	}
 
