@@ -725,6 +725,38 @@ const rewriter = function(CONFIG) {
 					}
 					// If not a string, fall through to default behavior.
 					break;
+		// --- Context-Aware Marker Injection Logic ---
+		switch (name) {
+			case 'eval':
+			case 'Function':
+			case 'setTimeout':
+			case 'setInterval':
+				if (typeof modifiedArgs[0] === 'string') {
+					// Inject marker safely as a string literal at the end of the code
+					modifiedArgs[0] = `${originalArgs[0]}; ${JSON.stringify(markerId)};`;
+					try {
+						originalFunc.apply(thisArg, modifiedArgs);
+					} catch (e) {
+						console.warn(`[EV] Marker injection failed for sink: ${name}`, e);
+					}
+					// Unconditionally log after execution attempt
+					queueMicrotask(() => {
+						const argObj = getArgs(originalArgs);
+						if (argObj.args.length > 0) {
+							finalizeLog({ intrBundle, name, args: originalArgs, fmts: CONFIG.formats, argObj });
+						}
+					});
+					return true; // We handled the call
+				}
+				break;
+
+			case 'set(Element.innerHTML)':
+			case 'set(Element.outerHTML)':
+				if (typeof modifiedArgs[0] === 'string') {
+					modifiedArgs[0] = `${originalArgs[0]}<!--${markerId}-->`;
+					return handleCallAndVerify();
+				}
+				break;
 
 				// HTML Sinks: innerHTML, outerHTML
 				case 'set(Element.innerHTML)':
