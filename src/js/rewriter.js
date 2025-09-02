@@ -671,7 +671,40 @@ const rewriter = function(CONFIG) {
 	* @param {array}	args array of arguments
 	* @returns {boolean} Always returns `false`
 	**/
-	function EvalVillainHook(intrBundle, name, args) {
+	function storeSinkForProbe(name, args, element) {
+		if (!element) return; // Can't create a sink encoder without an element to act on.
+
+		let encoder = null;
+		const value = args[0]; // The tainted value we are interested in.
+
+		switch (name) {
+			case 'set(Element.innerHTML)':
+				encoder = (marker) => { element.innerHTML = marker; };
+				break;
+			case 'set(Element.outerHTML)':
+				encoder = (marker) => { element.outerHTML = marker; };
+				break;
+			case 'value(Element.setAttribute)':
+			case 'value(Element.setAttributeNS)':
+				const attributeName = args[0];
+				// We only care about the value being tainted, not the attribute name.
+				encoder = (marker) => { element.setAttribute(attributeName, marker); };
+				break;
+		}
+
+		if (encoder) {
+			window.EV_FOUND_SOURCES.push({
+				encoder,
+				value: String(value), // Ensure value is a string for metadata
+				meta: { type: 'sink', param: name, location: location.href }
+			});
+		}
+	}
+
+	function EvalVillainHook(intrBundle, name, args, thisArg) {
+		// Store sink information for the probe feature.
+		storeSinkForProbe(name, args, thisArg);
+
 		const fmts = CONFIG.formats;
 		let argObj = {};
 		try {
@@ -737,13 +770,13 @@ const rewriter = function(CONFIG) {
 
 		// Start of Eval Villain hook
 		apply(_target, _thisArg, args) {
-			EvalVillainHook(self.intr, this.evname, args);
+			EvalVillainHook(self.intr, this.evname, args, _thisArg);
 			return Reflect.apply(...arguments);
 		}
 
 		// Start of Eval Villain hook
 		construct(_target, args, _newArg) {
-			EvalVillainHook(self.intr, this.evname, args);
+			EvalVillainHook(self.intr, this.evname, args, _newArg);
 			return Reflect.construct(...arguments);
 		}
 	}
