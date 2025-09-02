@@ -683,13 +683,30 @@ const rewriter = function(CONFIG) {
 	}
 
 	/**
-	 * Injects a marker into a JavaScript string in a way that is syntactically safe.
-	 * @param {string} str - The original JavaScript code string.
-	 * @param {string} markerId - The marker to inject.
-	 * @returns {string} The modified string with the marker injected.
+	 * Injects a marker into a JavaScript string for execution sinks.
 	 */
-	function injectMarkerToJsString(str, markerId) {
+	function injectJsMarker(str, markerId) {
 		return `${str}; ${JSON.stringify(markerId)}`;
+	}
+
+	/**
+	 * Injects a marker into an HTML string.
+	 */
+	function injectHtmlMarker(str, markerId) {
+		return `${str}<!--${markerId}-->`;
+	}
+
+	/**
+	 * Schedules a logging task using either a microtask or a macrotask.
+	 * @param {function} task - The logging function to execute.
+	 * @param {string} strategy - 'microtask' or 'macrotask'.
+	 */
+	function scheduleDomLogging(task, strategy = 'microtask') {
+		if (strategy === 'macrotask') {
+			setTimeout(task, 0);
+		} else {
+			queueMicrotask(task);
+		}
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
@@ -718,9 +735,9 @@ const rewriter = function(CONFIG) {
 				case 'setTimeout':
 				case 'setInterval':
 					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
-						modifiedArgs[0] = injectMarkerToJsString(originalArgs[0], markerId);
+						modifiedArgs[0] = injectJsMarker(originalArgs[0], markerId);
 						const result = originalFunc.apply(thisArg, modifiedArgs);
-						queueMicrotask(taskToLog);
+						scheduleDomLogging(taskToLog);
 						return result;
 					}
 					break;
@@ -731,39 +748,81 @@ const rewriter = function(CONFIG) {
 				case 'set(Element.innerHTML)':
 				case 'set(Element.outerHTML)':
 					if (typeof originalArgs[0] === 'string') {
-						// Ephemeral Injection for HTML sinks
-						modifiedArgs[0] = `${originalArgs[0]}<!--${markerId}-->`;
+						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
 						originalFunc.apply(thisArg, modifiedArgs);
 						const result = originalFunc.apply(thisArg, originalArgs); // Restore
-						queueMicrotask(taskToLog);
+						scheduleDomLogging(taskToLog);
 						return result;
 					}
 					break;
 
-				// Attribute Sink
+				// Property-Setter Sinks
+				case 'set(Element.textContent)':
+				case 'set(Element.innerText)':
+					if (typeof originalArgs[0] === 'string') {
+						// Use simple string injection for text content
+						modifiedArgs[0] = `${originalArgs[0]}${markerId}`;
+						originalFunc.apply(thisArg, modifiedArgs);
+						const result = originalFunc.apply(thisArg, originalArgs); // Restore
+						scheduleDomLogging(taskToLog);
+						return result;
+					}
+					break;
+
+				// Node-based Sinks
+				case 'value(Node.appendChild)':
+				case 'value(Node.insertBefore)':
+				case 'value(Node.replaceChild)':
+					const nodeToInsert = originalArgs[0];
+					// Ensure we are dealing with an element node that can have children.
+					if (nodeToInsert && nodeToInsert.nodeType === 1) {
+						const comment = document.createComment(markerId);
+						nodeToInsert.prepend(comment);
+						const result = originalFunc.apply(thisArg, originalArgs);
+						scheduleDomLogging(() => {
+							taskToLog();
+							comment.remove();
+						});
+						return result;
+					}
+					break;
+
+				case 'value(Range.createContextualFragment)':
+					if (typeof originalArgs[0] === 'string') {
+						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
+						const result = originalFunc.apply(thisArg, modifiedArgs);
+						scheduleDomLogging(taskToLog);
+						return result;
+					}
+					break;
+
+				// Attribute Sinks
 				case 'value(Element.setAttribute)':
-					const attrName = originalArgs[0]?.toLowerCase();
+				case 'value(Element.setAttributeNS)':
+					// Note: setAttributeNS has a namespace arg (originalArgs[0])
+					const isNS = name.includes('NS');
+					const attrName = (isNS ? originalArgs[1] : originalArgs[0])?.toLowerCase();
+					const valueIndex = isNS ? 2 : 1;
+
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
 						// Safe Injection for sensitive attributes
 						const markerAttrName = `data-ev-marker-${attrName}`;
-						originalFunc.apply(thisArg, [markerAttrName, markerId]);
+						thisArg.setAttribute(markerAttrName, markerId); // Use direct setAttribute for the marker
 						const attrResult = originalFunc.apply(thisArg, originalArgs);
-						queueMicrotask(() => {
+						scheduleDomLogging(() => {
 							taskToLog();
-							if (thisArg && typeof thisArg.removeAttribute === 'function') {
-								thisArg.removeAttribute(markerAttrName);
-							}
+							thisArg.removeAttribute(markerAttrName);
 						});
 						return attrResult;
 					} else {
 						// Ephemeral Injection for non-sensitive attributes
-						if (typeof originalArgs[1] === 'string') {
-							modifiedArgs[1] = `${originalArgs[1]}${markerId}`;
+						if (typeof originalArgs[valueIndex] === 'string') {
+							modifiedArgs[valueIndex] = `${originalArgs[valueIndex]}${markerId}`;
 							originalFunc.apply(thisArg, modifiedArgs);
 							const attrResult = originalFunc.apply(thisArg, originalArgs); // Restore
-							queueMicrotask(taskToLog);
+							scheduleDomLogging(taskToLog);
 							return attrResult;
 						}
 					}
@@ -775,7 +834,7 @@ const rewriter = function(CONFIG) {
 
 		// Default Behavior for all other sinks
 		const result = originalFunc.apply(thisArg, originalArgs);
-		queueMicrotask(taskToLog);
+		scheduleDomLogging(taskToLog);
 		return result;
 	}
 
