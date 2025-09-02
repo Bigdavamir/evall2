@@ -720,18 +720,34 @@ const rewriter = function(CONFIG) {
 		real.logGroupEnd(titleGrp);
 	}
 
+	const HIGH_RISK_LENGTH = 100 * 1024; // 100KB
+	const SCRIPT_TAG_REGEX = /<script/i;
+
 	/**
-	 * Injects a marker into a JavaScript string for execution sinks.
+	 * Checks if a value is a "high-risk" string that should not be injected.
+	 * @param {*} value - The value to check.
+	 * @returns {boolean} True if the value is high-risk.
 	 */
-	function injectJsMarker(str, markerId) {
-		return `${str}; ${JSON.stringify(markerId)}`;
+	function isHighRisk(value) {
+		if (typeof value !== 'string' || !value) return false;
+		if (value.length > HIGH_RISK_LENGTH) return true;
+		if (SCRIPT_TAG_REGEX.test(value)) return true;
+		return false;
 	}
 
 	/**
-	 * Injects a marker into an HTML string.
+	 * Injects a marker into a JavaScript string for execution sinks.
+	 * The marker is wrapped in a void() expression to be inert.
+	 */
+	function injectJsMarker(str, markerId) {
+		return `${str}; void("${markerId}")`;
+	}
+
+	/**
+	 * Injects a marker into an HTML string as a namespaced comment.
 	 */
 	function injectHtmlMarker(str, markerId) {
-		return `${str}<!--${markerId}-->`;
+		return `${str}<!--EV:${markerId}-->`;
 	}
 
 	/**
@@ -748,82 +764,78 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc, callType = 'apply') {
-		// If originalFunc is not a function (e.g., from a robust hook on a property),
-		// we can't and shouldn't execute it. Just log the attempt and exit.
 		if (typeof originalFunc !== 'function') {
 			real.warn("[EV] No original function provided to hook, logging only. Sink:", name);
 			const argObj = getArgs(args);
-			if (argObj.args.length > 0) {
-				finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj });
-			}
-			return; // Exit safely
+			if (argObj.args.length > 0) { finalizeLog({ intrBundle, name, args, fmts: CONFIG.formats, argObj }); }
+			return;
 		}
 
-		const logCandidate = {
-			intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args)
-		};
+		const logCandidate = { intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args) };
 		const taskToLog = () => finalizeLog(logCandidate);
 		const markerId = `__EV_MARKER_${Date.now()}_${Math.random().toString(36).substr(2, 9)}__`;
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
-		// Helper to abstract away the apply/construct logic.
 		const executeOriginal = (func, context, funcArgs) => {
-			if (callType === 'construct') {
-				return Reflect.construct(func, funcArgs);
-			}
+			if (callType === 'construct') { return Reflect.construct(func, funcArgs); }
 			return Reflect.apply(func, context, funcArgs);
 		};
 
-		try {
-			switch (name) {
-				// Execution Sinks
-				case 'eval':
-				case 'Function':
-				case 'setTimeout':
-				case 'setInterval':
+		switch (name) {
+			case 'eval':
+			case 'Function':
+			case 'setTimeout':
+			case 'setInterval':
+				try {
 					if (typeof originalArgs[0] === 'string' && originalArgs[0]) {
+						if (isHighRisk(originalArgs[0])) {
+							real.warn(`[EV] Skipped injection for high-risk content in ${name}.`);
+							break;
+						}
 						modifiedArgs[0] = injectJsMarker(originalArgs[0], markerId);
-						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
+						return executeOriginal(originalFunc, thisArg, modifiedArgs);
+					}
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
+
+			case 'document.write':
+			case 'document.writeln':
+			case 'set(Element.innerHTML)':
+			case 'set(Element.outerHTML)':
+				try {
+					if (typeof originalArgs[0] === 'string') {
+						if (isHighRisk(originalArgs[0])) {
+							real.warn(`[EV] Skipped injection for high-risk content in ${name}.`);
+							break;
+						}
+						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
+						return executeOriginal(originalFunc, thisArg, modifiedArgs);
+					}
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
+
+			case 'set(Element.textContent)':
+			case 'set(Element.innerText)':
+				try {
+					if (typeof originalArgs[0] === 'string') {
+						if (isHighRisk(originalArgs[0])) {
+							real.warn(`[EV] Skipped injection for high-risk content in ${name}.`);
+							break;
+						}
+						modifiedArgs[0] = `${originalArgs[0]}${markerId}`;
+						executeOriginal(originalFunc, thisArg, modifiedArgs);
+						const result = executeOriginal(originalFunc, thisArg, originalArgs); // Restore
 						scheduleDomLogging(taskToLog);
 						return result;
 					}
-					break;
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
 
-				// HTML Sinks (Ephemeral: Inject -> Apply -> Log -> Cleanup)
-				case 'document.write':
-				case 'document.writeln':
-				case 'set(Element.innerHTML)':
-				case 'set(Element.outerHTML)':
-					if (typeof originalArgs[0] === 'string') {
-						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
-						const result = executeOriginal(originalFunc, thisArg, modifiedArgs); // Apply with marker
-						scheduleDomLogging(() => {
-							taskToLog();
-							// Cleanup Note: For these specific sinks, a "restore" action is not performed.
-						});
-						return result;
-					}
-					break;
-
-				// Property-Setter Sinks
-				case 'set(Element.textContent)':
-				case 'set(Element.innerText)':
-					if (typeof originalArgs[0] === 'string') {
-						modifiedArgs[0] = `${originalArgs[0]}${markerId}`;
-						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
-						scheduleDomLogging(() => {
-							taskToLog();
-							executeOriginal(originalFunc, thisArg, originalArgs); // Restore
-						});
-						return result;
-					}
-					break;
-
-				// Node-based Sinks
-				case 'value(Node.appendChild)':
-				case 'value(Node.insertBefore)':
-				case 'value(Node.replaceChild)':
+			case 'value(Node.appendChild)':
+			case 'value(Node.insertBefore)':
+			case 'value(Node.replaceChild)':
+				try {
 					const nodeToInsert = originalArgs[0];
 					if (nodeToInsert && nodeToInsert.nodeType === 1) {
 						const comment = document.createComment(markerId);
@@ -835,27 +847,27 @@ const rewriter = function(CONFIG) {
 						});
 						return result;
 					}
-					break;
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
 
-				case 'value(Range.createContextualFragment)':
+			case 'value(Range.createContextualFragment)':
+				try {
 					if (typeof originalArgs[0] === 'string') {
 						modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
-						const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
-						scheduleDomLogging(taskToLog);
-						return result;
+						return executeOriginal(originalFunc, thisArg, modifiedArgs);
 					}
-					break;
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
 
-				// Attribute Sinks
-				case 'value(Element.setAttribute)':
-				case 'value(Element.setAttributeNS)':
+			case 'value(Element.setAttribute)':
+			case 'value(Element.setAttributeNS)':
+				try {
 					const isNS = name.includes('NS');
 					const attrName = (isNS ? originalArgs[1] : originalArgs[0])?.toLowerCase();
 					const valueIndex = isNS ? 2 : 1;
 					const SENSITIVE_ATTRS = ['src', 'href', 'xlink:href', 'formaction', 'action', 'background', 'data'];
 
 					if (SENSITIVE_ATTRS.includes(attrName)) {
-						// Safe Injection
 						const markerAttrName = `data-ev-marker-${attrName}`;
 						const comment = document.createComment(markerId);
 						thisArg.setAttribute(markerAttrName, markerId);
@@ -868,24 +880,19 @@ const rewriter = function(CONFIG) {
 						});
 						return attrResult;
 					} else {
-						// Ephemeral Injection
 						if (typeof originalArgs[valueIndex] === 'string') {
 							modifiedArgs[valueIndex] = `${originalArgs[valueIndex]}${markerId}`;
-							const attrResult = executeOriginal(originalFunc, thisArg, modifiedArgs);
-							scheduleDomLogging(() => {
-								taskToLog();
-								executeOriginal(originalFunc, thisArg, originalArgs); // Restore
-							});
+							executeOriginal(originalFunc, thisArg, modifiedArgs);
+							const attrResult = executeOriginal(originalFunc, thisArg, originalArgs); // Restore
+							scheduleDomLogging(taskToLog);
 							return attrResult;
 						}
 					}
-					break;
-			}
-		} catch (e) {
-			real.warn(`[EV] Error during sink handling for '${name}':`, e);
+				} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+				break;
 		}
 
-		// Default Behavior
+		// Default Behavior (no injection)
 		const result = executeOriginal(originalFunc, thisArg, originalArgs);
 		scheduleDomLogging(taskToLog);
 		return result;
