@@ -721,7 +721,7 @@ const rewriter = function(CONFIG) {
 	}
 
 	function EvalVillainHook(intrBundle, name, args, thisArg, originalFunc) {
-		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)', 'value(Element.setAttribute)'];
+		const VERIFIABLE_SINKS = ['set(Element.innerHTML)', 'set(Element.outerHTML)'];
 
 		// For now, only apply verification to a subset of sinks.
 		if (VERIFIABLE_SINKS.includes(name)) {
