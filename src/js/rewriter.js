@@ -1152,12 +1152,19 @@ const rewriter = function(CONFIG) {
 	function saveUserSource(sObj) {
 		try {
 			let sources = JSON.parse(real.localStorage.getItem(USER_SOURCE_KEY) || '[]');
-			if (sources.some(s => s.search === sObj.search)) return;
-			sources.unshift(sObj);
-			if (sources.length > MAX_USER_SOURCES) {
-				sources = sources.slice(0, MAX_USER_SOURCES);
+
+			// Remove any previous entry from the same element to avoid storing intermediate values
+			const filteredSources = sources.filter(s => s.display !== sObj.display);
+
+			// Add the new source to the beginning
+			filteredSources.unshift(sObj);
+
+			// Enforce the quota
+			if (filteredSources.length > MAX_USER_SOURCES) {
+				filteredSources.length = MAX_USER_SOURCES;
 			}
-			real.localStorage.setItem(USER_SOURCE_KEY, JSON.stringify(sources));
+
+			real.localStorage.setItem(USER_SOURCE_KEY, JSON.stringify(filteredSources));
 		} catch (e) {
 			real.warn('[EV] Failed to save user source to localStorage.', e);
 		}
