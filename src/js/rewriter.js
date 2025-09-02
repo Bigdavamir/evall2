@@ -285,7 +285,9 @@ const rewriter = function(CONFIG) {
 		// --- Specific Decoding Functions ---
 
 		function* urlDecode(str) {
+			// [VF-PATCH:PreCheck] START
 			if (!str.includes('%')) return;
+			// [VF-PATCH:PreCheck] END
 			let current = str;
 			for (let i = 0; i < 10; i++) { // Limit nesting
 				try {
@@ -303,7 +305,9 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* htmlEntityDecode(str) {
-			if (!str.includes('&')) return;
+			// [VF-PATCH:PreCheck] START
+			if (!str.includes('&') || !/&[a-zA-Z0-9#]{1,10};/.test(str)) return;
+			// [VF-PATCH:PreCheck] END
 			// This is a browser-only implementation.
 			if (typeof document === 'undefined') return;
 			try {
@@ -317,7 +321,9 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* jsUnicodeEscapeDecode(str) {
+			// [VF-PATCH:PreCheck] START
 			if (!str.includes('\\')) return;
+			// [VF-PATCH:PreCheck] END
 			// decodes \uXXXX and \xXX
 			try {
 				const decoded = str.replace(/\\u([a-fA-F0-9]{4})|\\x([a-fA-F0-9]{2})/g, (_, p1, p2) =>
@@ -330,8 +336,9 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* base64Decode(str) {
-			// Only decode if it looks like Base64
-			if (!/^[a-zA-Z0-9+/=\s_-]+$/.test(str) || str.length % 4 !== 0) return;
+			// [VF-PATCH:PreCheck] START
+			if (str.length < 4 || str.length % 4 !== 0 || !/^[A-Za-z0-9+/=\s_-]+$/.test(str)) return;
+			// [VF-PATCH:PreCheck] END
 			const standard = str.replace(/[-_]/g, m => m === '-' ? '+' : '/');
 			try {
 				const decoded = atob(standard);
@@ -342,40 +349,47 @@ const rewriter = function(CONFIG) {
 		}
 
 		function* hexDecode(str) {
-			if (/^(?:[0-9a-fA-F]{2})+$/.test(str) && str.length > 1) {
-				try {
-					let decoded = '';
-					for (let i = 0; i < str.length; i += 2) {
-						decoded += String.fromCharCode(parseInt(str.substr(i, 2), 16));
-					}
-					 if (decoded) yield [decoded, 'hex'];
-				} catch (e) {}
-			}
+			// [VF-PATCH:PreCheck] START
+			if (str.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(str)) return;
+			// [VF-PATCH:PreCheck] END
+			try {
+				let decoded = '';
+				for (let i = 0; i < str.length; i += 2) {
+					decoded += String.fromCharCode(parseInt(str.substr(i, 2), 16));
+				}
+				 if (decoded) yield [decoded, 'hex'];
+			} catch (e) {}
 		}
 
 		function* charCodeDecode(str) {
-			if (/^\d+(,\d+)+$/.test(str)) {
-				try {
-					const decoded = String.fromCharCode.apply(null, str.split(',').map(Number));
-					if (decoded) yield [decoded, 'fromCharCode'];
-				} catch (e) {}
-			}
+			// [VF-PATCH:PreCheck] START
+			if (!/^\s*\d+(\s*,\s*\d+)*\s*$/.test(str)) return;
+			// [VF-PATCH:PreCheck] END
+			try {
+				const decoded = String.fromCharCode.apply(null, str.trim().split(',').map(Number));
+				if (decoded) yield [decoded, 'fromCharCode'];
+			} catch (e) {}
 		}
 
 		function* jsonParse(str) {
-        const trimmed = str.trim();
-        if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-				try {
-                const parsed = JSON.parse(trimmed);
-					// We don't yield the object itself, but rather kick off a new decoding from that point
-					const newSeen = new Set(); // Use a fresh 'seen' set for the sub-document
-					yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
-				} catch (e) {}
+			// [VF-PATCH:PreCheck] START
+			const trimmed = str.trim();
+			if ((!trimmed.startsWith('{') || !trimmed.endsWith('}')) && (!trimmed.startsWith('[') || !trimmed.endsWith(']'))) {
+				return;
 			}
+			// [VF-PATCH:PreCheck] END
+			try {
+				const parsed = JSON.parse(trimmed);
+				// We don't yield the object itself, but rather kick off a new decoding from that point
+				const newSeen = new Set(); // Use a fresh 'seen' set for the sub-document
+				yield* decodeAny(parsed, 'jsonParse', newSeen, 0);
+			} catch (e) {}
 		}
 
 		function* parseMultipart(str) {
+			// [VF-PATCH:PreCheck] START
 			if (!str.includes('Content-Disposition')) return;
+			// [VF-PATCH:PreCheck] END
 			const boundaryMatch = str.match(/^--([^\r\n]+)/);
 			if (!boundaryMatch) return;
 			const boundary = boundaryMatch[1];
@@ -513,13 +527,25 @@ const rewriter = function(CONFIG) {
 	*/
 	// [VF-PATCH:CoreDecodeEngine] END
 
-	const MAX_INPUT_SIZE = 10240; // 10 KB
+	const MAX_INPUT_SIZE = 10000;
 
 	// set of strings to search for
 	function addToFifo(sObj, fifoName) { // TODO: add blacklist arg
-		if (typeof sObj.search === 'string' && sObj.search.length > MAX_INPUT_SIZE) {
-			sObj.search = sObj.search.substring(0, MAX_INPUT_SIZE); // Truncate
+		// [VF-PATCH:SizeLimit] START
+		let inputSize = 0;
+		if (typeof sObj.search === 'string') {
+			inputSize = sObj.search.length;
+		} else if (typeof sObj.search === 'object' && sObj.search !== null) {
+			try {
+				inputSize = JSON.stringify(sObj.search).length;
+			} catch (e) {
+				return; // Cannot serialize, so skip
+			}
 		}
+		if (inputSize > MAX_INPUT_SIZE) {
+			return; // Skip oversized input
+		}
+		// [VF-PATCH:SizeLimit] END
 
 		const fifo = ALLSOURCES[fifoName];
 		if (!fifo) {
