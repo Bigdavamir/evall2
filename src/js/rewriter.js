@@ -4,6 +4,8 @@
  * want. Such as into a proxie'd response or electron instramentation.
  */
 const rewriter = function(CONFIG) {
+  if (!window.EV_FOUND_SOURCES) window.EV_FOUND_SOURCES = [];
+
   // Robust hook for innerHTML and outerHTML to ensure we catch all sets,
   // even if other scripts have already hooked them.
   function applyRobustHook(propName) {
@@ -351,6 +353,47 @@ const rewriter = function(CONFIG) {
 	}
 	// End of transplanted decoder engine
 
+	// End of transplanted decoder engine
+
+	function storeSourceForProbe(sObj, fifoName) {
+		let encoder = null;
+		const param = sObj.param;
+
+		switch (fifoName) {
+			case 'localStorage':
+				if (!param) break;
+				encoder = (marker) => { localStorage.setItem(param, marker); };
+				break;
+			case 'cookie':
+				if (!param) break;
+				encoder = (marker) => { document.cookie = `${param}=${marker}`; };
+				break;
+			case 'winname':
+				encoder = (marker) => { window.name = marker; };
+				break;
+			case 'query':
+				if (!param) break;
+				encoder = (marker) => {
+					const url = new URL(window.location.href);
+					url.searchParams.set(param, marker);
+					window.location = url.href;
+				};
+				break;
+			case 'fragment':
+				encoder = (marker) => { window.location.hash = marker; };
+				break;
+		}
+
+		if (encoder) {
+			window.EV_FOUND_SOURCES.push({
+				encoder: encoder,
+				value: sObj.search,
+				meta: { type: fifoName, param: param, location: location.href }
+			});
+		}
+	}
+
+
 	const MAX_INPUT_SIZE = 10000;
 
 	let rotateWarnAt = 8;
@@ -358,6 +401,9 @@ const rewriter = function(CONFIG) {
 		if (typeof sObj.search === 'string' && sObj.search.length > MAX_INPUT_SIZE) {
 			return;
 		}
+
+		// Store the original source for the probe feature before decoding/blacklisting.
+		storeSourceForProbe(sObj, fifoName);
 
 		const fifo = ALLSOURCES[fifoName];
 		if (!fifo) {
