@@ -364,29 +364,41 @@ const rewriter = function(CONFIG) {
 		let id = '';
 		const param = sObj.param;
 
+		// The encoder functions no longer take a 'marker' argument.
+		// They read it from the global scope to ensure it's available.
+		const getGlobalMarker = () => {
+			const marker = window.EV_ACTIVE_MARKER;
+			if (!marker) {
+				real.warn("[EV] Probe encoder called but no active marker was found on window.EV_ACTIVE_MARKER.");
+			}
+			return marker;
+		};
+
 		switch (fifoName) {
 			case 'localStorage':
 				if (!param) break;
 				id = `ls:${param}`;
 				priority = 1;
-				encoder = (marker) => { localStorage.setItem(param, marker); };
+				encoder = () => { const marker = getGlobalMarker(); if (marker) localStorage.setItem(param, marker); };
 				break;
 			case 'cookie':
 				if (!param) break;
 				id = `cookie:${param}`;
 				priority = 1;
-				encoder = (marker) => { document.cookie = `${param}=${marker}`; };
+				encoder = () => { const marker = getGlobalMarker(); if (marker) document.cookie = `${param}=${marker}`; };
 				break;
 			case 'winname':
 				id = 'winname';
 				priority = 1;
-				encoder = (marker) => { window.name = marker; };
+				encoder = () => { const marker = getGlobalMarker(); if (marker) window.name = marker; };
 				break;
 			case 'query':
 				if (!param) break;
 				id = `query:${param}`;
 				priority = 3;
-				encoder = (marker) => {
+				encoder = () => {
+					const marker = getGlobalMarker();
+					if (!marker) return;
 					const url = new URL(window.location.href);
 					url.searchParams.set(param, marker);
 					window.location.href = url.href;
@@ -395,7 +407,7 @@ const rewriter = function(CONFIG) {
 			case 'fragment':
 				id = 'fragment';
 				priority = 3;
-				encoder = (marker) => { window.location.hash = marker; };
+				encoder = () => { const marker = getGlobalMarker(); if (marker) window.location.hash = marker; };
 				break;
 			case 'path':
 				// Path manipulation is complex and risky, skipping for probe for now.
@@ -777,6 +789,7 @@ const rewriter = function(CONFIG) {
 		const logCandidate = { intrBundle, name, args, fmts: CONFIG.formats, argObj: getArgs(args) };
 		const taskToLog = () => finalizeLog(logCandidate);
 		const markerId = `EV_SAFE_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+		window.EV_ACTIVE_MARKER = markerId; // Store marker globally for the probe
 		const originalArgs = [...args];
 		const modifiedArgs = [...args];
 
@@ -808,8 +821,6 @@ const rewriter = function(CONFIG) {
 
 				case 'document.write':
 				case 'document.writeln':
-				case 'set(Element.innerHTML)':
-				case 'set(Element.outerHTML)':
 					try {
 						if (typeof originalArgs[0] === 'string') {
 							if (isHighRisk(originalArgs[0])) {
@@ -818,10 +829,36 @@ const rewriter = function(CONFIG) {
 							}
 							modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
 							const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
-							scheduleDomLogging(() => {
-								taskToLog();
-								// Cleanup is not feasible for these sinks without destroying content.
-							});
+							scheduleDomLogging(taskToLog); // No cleanup possible
+							return result;
+						}
+					} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
+					break;
+
+				case 'set(Element.innerHTML)':
+				case 'set(Element.outerHTML)':
+					try {
+						if (typeof originalArgs[0] === 'string') {
+							if (isHighRisk(originalArgs[0])) {
+								real.warn(`[EV] Skipped injection for high-risk content in ${name}.`);
+								break;
+							}
+							const propName = name === 'set(Element.innerHTML)' ? 'innerHTML' : 'outerHTML';
+							const originalValue = thisArg[propName];
+
+							modifiedArgs[0] = injectHtmlMarker(originalArgs[0], markerId);
+							const result = executeOriginal(originalFunc, thisArg, modifiedArgs);
+
+							scheduleDomLogging(taskToLog);
+
+							setTimeout(() => {
+								try {
+									thisArg[propName] = originalValue;
+								} catch(e) {
+									real.warn(`[EV] Failed to restore original value for ${name}:`, e);
+								}
+							}, 0);
+
 							return result;
 						}
 					} catch (e) { real.warn(`[EV] Error during injection for ${name}:`, e); }
